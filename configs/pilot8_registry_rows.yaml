@@ -1,0 +1,121 @@
+# Guide §1.4 / §11.1: registry rows for the eight pilot models. Merge into configs/checkpoints.yaml (replace
+# any row with the same `id`; if your ids differ, keep yours and copy the values).
+#
+# Basis of each value (no row was checked against its Hugging Face model card, which this workspace cannot open;
+# values come from the papers, the official READMEs / model cards on GitHub, and timm's own pretrained config):
+#   params_m   built from the timm / open_clip architecture with num_classes=0 (backbone only), at the released img_size
+#   license    timm pretrained cfg (timm 1.0.30) or the official repo's README / MODEL_CARD
+#   epochs     passes over pretrain_images.  Where a model is trained by iterations or samples-seen instead
+#              (DINOv2, OpenCLIP), epochs is the DERIVED epoch-equivalent = samples seen / pretrain_images.
+# `verify: true` = not confirmed; scripts of the pilot (tests/test_registry.py) FAIL while it is present.
+# A null value is a missing value: that model cannot enter the §10.3 regression.
+
+- id: dino_vits16
+  source: timm/vit_small_patch16_224.dino
+  objective: self_distillation
+  arch: ViT-S/16
+  params_m: 21.7
+  depth: 12
+  pretrain_data: IN1k
+  pretrain_images_m: 1.28
+  epochs: 800   # DINO paper (Caron et al. 2021) App. D "Longer training": Table-2 models trained 800 ep; its 74.5 k-NN = README's released ViT-S/16
+  registers: 0
+  native_res: 224
+  license: Apache-2.0
+  set: A
+
+- id: deit3_small_patch16_224
+  source: timm/deit3_small_patch16_224.fb_in1k   # the untagged name already resolves to fb_in1k in timm 1.0.30; NOT .fb_in22k_ft_in1k
+  objective: label_supervised
+  arch: ViT-S/16
+  params_m: 21.7
+  depth: 12
+  pretrain_data: IN1k
+  pretrain_images_m: 1.28
+  epochs: 800   # facebookresearch/deit README_revenge.md, "Training on ImageNet-1k": deit_small_patch16_LS ... --epochs 800 (DeiT-III paper itself not re-read)
+  registers: 0
+  native_res: 224
+  license: Apache-2.0
+  set: A
+
+- id: ibot_vits16
+  source: "bytedance/ibot ViT-S/16 backbone (teacher), ImageNet-1K, loaded into timm vit_small_patch16_224"   # confirm the file you loaded
+  objective: self_distillation   # masked self-distillation
+  arch: ViT-S/16
+  params_m: 21.7
+  depth: 12
+  pretrain_data: IN1k
+  pretrain_images_m: 1.28
+  epochs: 800   # iBOT README: ViT-S/16, 800 epochs -> 75.2 k-NN / 77.9 linear = the released ViT-S/16 row
+  registers: 0
+  native_res: 224
+  license: Apache-2.0   # iBOT README, License section
+
+- id: mocov3_vitb16
+  source: "facebookresearch/moco-v3 ViT-B/16 300-epoch checkpoint, loaded into timm vit_base_patch16_224"   # confirm the file name you loaded
+  objective: contrastive_ssl   # use your registry's own label for MoCo v3
+  arch: ViT-B/16
+  params_m: 85.8
+  depth: 12
+  pretrain_data: IN1k
+  pretrain_images_m: 1.28
+  epochs: 300   # MoCo v3 README table: ViT-Base, 300 pretrain epochs, 2x224 crops, linear 76.7
+  registers: 0
+  native_res: 224
+  license: CC-BY-NC-4.0   # MoCo v3 README, License section
+
+- id: mae_vitb16
+  source: timm/vit_base_patch16_224.mae   # = facebookresearch/mae mae_pretrain_vit_base.pth
+  objective: masked_image_modeling
+  arch: ViT-B/16
+  params_m: 85.8
+  depth: 12
+  pretrain_data: IN1k
+  pretrain_images_m: 1.28
+  epochs: 1600
+  verify: true   # 1600 = the schedule of the MAE paper's main results (He et al. 2021) - from memory, not read: open arXiv 2111.06377, Sec. 4 / Table 3, and confirm
+  registers: 0
+  native_res: 224
+  license: CC-BY-NC-4.0   # timm pretrained cfg + MAE README
+
+- id: dinov2_vitb14
+  source: timm/vit_base_patch14_dinov2.lvd142m   # = facebookresearch/dinov2 dinov2_vitb14, distilled from ViT-g/14, no registers (MODEL_CARD.md)
+  objective: self_distillation
+  arch: ViT-B/14
+  params_m: 86.6
+  depth: 12
+  pretrain_data: LVD-142M
+  pretrain_images_m: 142
+  epochs: null
+  verify: true   # DERIVED: iterations x global batch / 142M. Needs, from the DINOv2 paper (arXiv 2304.07193) appendix: iterations and batch size of the ViT-B/14 distillation
+  registers: 0
+  native_res: 518   # audit protocol runs it at 196 px (14x14 grid)
+  license: Apache-2.0   # MODEL_CARD.md
+
+- id: dinov2_vitb14_reg
+  source: timm/vit_base_patch14_reg4_dinov2.lvd142m   # = dinov2_vitb14_reg; separate ViT-g-with-registers teacher + distilled B/14 (MODEL_CARD.md)
+  objective: self_distillation
+  arch: ViT-B/14
+  params_m: 86.6
+  depth: 12
+  pretrain_data: LVD-142M
+  pretrain_images_m: 142
+  epochs: null
+  verify: true   # same derivation as dinov2_vitb14; confirm the registers model used the same schedule
+  registers: 4   # MODEL_CARD.md ("optionally 4 register tokens"); Darcet et al.: "In all our experiments, we kept 4 register tokens"
+  native_res: 518
+  license: Apache-2.0
+
+- id: openclip_vitb16
+  source: "open_clip: ViT-B-16 / <PRETRAINED TAG YOU LOADED>"
+  objective: image_text_contrastive
+  arch: ViT-B/16
+  params_m: 86.2   # visual tower incl. final projection
+  depth: 12
+  pretrain_data: null
+  pretrain_images_m: null
+  epochs: null
+  verify: true   # needs: the exact `pretrained=` tag. Then pretrain_images_m = dataset size and epochs = samples seen / dataset size (tag name encodes samples seen, e.g. s34b)
+  registers: 0
+  native_res: 224
+  license: null
