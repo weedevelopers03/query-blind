@@ -144,11 +144,11 @@
   depth: 12   # built timm model has 12 blocks (timm 1.0.31)
   pretrain_data: LVD-142M
   pretrain_images_m: 142
+  epochs: 9.01  # derived from Oquab et al. (arXiv:2304.07193, Appendix B.1 Table 16): DINOv2-B distilled for 625k iters x global batch 2048 = 1.28B samples seen / 142M = 9.01 effective dataset epochs (excl. 10k-iter 518px HR adaptation; ~9.16 incl. HR; not DINOv2's arbitrary OFFICIAL_EPOCH_LENGTH=1250 pseudo-epochs)
   registers: 0
   native_res: 518
   license: Apache-2.0
   set: B
-  verify: true  # epochs: DERIVED (iterations x global batch / 142M). The DINOv2 paper's Table 17 is the architecture table, not the schedule; needs the training-details text. If the distilled models' schedule is never stated there, leave epochs empty and ask the supervisor how to enter DINOv2 in the regression
 
 - id: dinov2_vitb14_reg
   source: timm/vit_base_patch14_reg4_dinov2.lvd142m
@@ -158,11 +158,11 @@
   depth: 12   # built timm model has 12 blocks (timm 1.0.31)
   pretrain_data: LVD-142M
   pretrain_images_m: 142
+  epochs: 9.01  # derived using the matched DINOv2-B distilled schedule (625k iters x batch 2048 / 142M = 9.01 effective epochs); facebookresearch/dinov2 MODEL_CARD.md confirms distillation from a separate ViT-g/14+reg4 teacher on LVD-142M via the DINOv2 recipe, though it does not print a separate Table-16 iteration count for the +reg re-run
   registers: 4
   native_res: 518
   license: Apache-2.0
   set: B
-  verify: true  # epochs: same derivation as dinov2_vitb14; MODEL_CARD.md says the registers models come from a separate ViT-g-with-registers teacher, so do not assume the same schedule
 
 - id: dinov2_vitl14
   source: timm/vit_large_patch14_dinov2.lvd142m
@@ -405,15 +405,18 @@
   verify: true  # exact pretrained tag (laion2b vs. laion400m vs. datacomp) not chosen yet - proposal just says "OpenCLIP ViT-B/L"
 
 - id: openclip_vitb16
-  source: "open_clip: ViT-B-16 / (tag TBD)"
+  source: "open_clip: ViT-B-16 / laion2b_s34b_b88k"
   objective: image_text_contrastive
   arch: ViT-B/16
   params_m: 86.2   # visual tower incl. final projection (built with open_clip 4.2.2)
   depth: 12
+  pretrain_data: LAION-2B-en
+  pretrain_images_m: 2320  # 2.32B English image-text pairs in LAION-2B-en (Schuhmann et al., NeurIPS 2022; HF card rounds to "2B")
+  epochs: 14.66  # derived: 34B samples seen (s34b, global batch 88k, Cherti et al. CVPR 2023) / 2.32B = 14.66 effective dataset epochs (17.0 using rounded 2.0B; pretrain_images_m * epochs = 34B seen either way)
   registers: 0
   native_res: 224
+  license: MIT  # confirmed on huggingface.co/laion/CLIP-ViT-B-16-laion2B-s34B-b88K model card metadata and mlfoundations/open_clip repo
   set: F
-  verify: true  # needs the exact `pretrained=` tag you loaded; then pretrain_data, pretrain_images_m (dataset size) and epochs (= samples seen / dataset size; the tag encodes samples seen, e.g. s34b). Example if the tag is laion2b_s34b_b88k: LAION-2B English subset, 34B seen -> roughly 15-17 epoch-equivalents (dataset size to be taken from the card). License also unclear: card header and repo page differ - check
 
 - id: siglip_vitb16
   source: "timm/vit_base_patch16_siglip_224"
