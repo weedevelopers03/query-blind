@@ -147,6 +147,22 @@ def test_4_waterbirds_congruence_analysis_and_terciles():
     assert wb["congruence_gap_cong_minus_incong"]["mean_diff"] == pytest.approx(0.7, abs=0.05)
     assert wb["congruence_gap_cong_minus_incong"]["ci_excludes_zero"] is True
     assert len(wb["by_group"]) == 4
+    assert wb["balanced_2x2"]["balanced_interaction_cong_minus_incong"]["mean"] == pytest.approx(0.7, abs=0.05)
+    assert wb["balanced_2x2"]["balanced_interaction_cong_minus_incong"]["ci_excludes_zero"] is True
+    assert abs(wb["balanced_2x2"]["bg_main_effect_water_minus_land"]["mean"]) < 0.08
+
+    # Imbalanced 80/20 test (like Waterbirds): pure +0.5 water-bg main effect, ZERO true congruence interaction
+    y_imb = np.array([0] * 160 + [1] * 40)
+    p_imb = np.array([0] * 80 + [1] * 80 + [0] * 20 + [1] * 20)
+    c_imb = y_imb == p_imb
+    bss_imb = 0.2 + 0.5 * p_imb + 0.02 * rng.standard_normal(200)
+    wb_imb = routing.waterbirds_congruence_analysis(bss_imb, c_imb, y_bird=y_imb, place_bg=p_imb)
+    # Pooled gap is negatively confounded (~-0.30), while balanced_2x2 cleanly separates bg (+0.50) and interaction (~0.00)!
+    assert wb_imb["congruence_gap_cong_minus_incong"]["mean_diff"] < -0.20
+    assert wb_imb["balanced_2x2"]["bg_main_effect_water_minus_land"]["mean"] == pytest.approx(0.5, abs=0.03)
+    assert wb_imb["balanced_2x2"]["bg_main_effect_water_minus_land"]["ci_excludes_zero"] is True
+    assert abs(wb_imb["balanced_2x2"]["balanced_interaction_cong_minus_incong"]["mean"]) < 0.03
+    assert wb_imb["balanced_2x2"]["balanced_interaction_cong_minus_incong"]["ci_excludes_zero"] is False
 
 
 def test_5_ibot_and_mocov3_use_imagenet_norm_override(tmp_path):

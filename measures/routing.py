@@ -298,4 +298,38 @@ def waterbirds_congruence_analysis(
             "waterbird_on_water": (yb == 1) & (pb == 1),
         }
         res["by_group"] = {g: _boot_mean_ci(vals[m], n_resamples=n_resamples, seed=seed) for g, m in groups.items()}
+
+        # Stratified 2x2 bootstrap eliminating Waterbirds 78/22 landbird/waterbird class imbalance
+        g_vals = {g: vals[m][np.isfinite(vals[m])] for g, m in groups.items()}
+        if all(v.size >= 2 for v in g_vals.values()):
+            rng = np.random.default_rng(seed + 77)
+            boots = {}
+            for g, v in g_vals.items():
+                idx = rng.integers(0, v.size, size=(n_resamples, v.size))
+                boots[g] = v[idx].mean(axis=1)
+            ll_m, lw_m = float(g_vals["landbird_on_land"].mean()), float(g_vals["landbird_on_water"].mean())
+            wl_m, ww_m = float(g_vals["waterbird_on_land"].mean()), float(g_vals["waterbird_on_water"].mean())
+
+            bg_eff_pt = 0.5 * ((lw_m - ll_m) + (ww_m - wl_m))
+            bg_eff_b = 0.5 * ((boots["landbird_on_water"] - boots["landbird_on_land"]) + (boots["waterbird_on_water"] - boots["waterbird_on_land"]))
+            bg_lo, bg_hi = np.percentile(bg_eff_b, [2.5, 97.5])
+
+            inter_pt = 0.5 * (ll_m + ww_m) - 0.5 * (lw_m + wl_m)
+            inter_b = 0.5 * (boots["landbird_on_land"] + boots["waterbird_on_water"]) - 0.5 * (boots["landbird_on_water"] + boots["waterbird_on_land"])
+            in_lo, in_hi = np.percentile(inter_b, [2.5, 97.5])
+
+            res["balanced_2x2"] = {
+                "bg_main_effect_water_minus_land": {
+                    "mean": float(bg_eff_pt),
+                    "ci95_low": float(bg_lo),
+                    "ci95_high": float(bg_hi),
+                    "ci_excludes_zero": bool((bg_lo > 0.0) or (bg_hi < 0.0)),
+                },
+                "balanced_interaction_cong_minus_incong": {
+                    "mean": float(inter_pt),
+                    "ci95_low": float(in_lo),
+                    "ci95_high": float(in_hi),
+                    "ci_excludes_zero": bool((in_lo > 0.0) or (in_hi < 0.0)),
+                },
+            }
     return res

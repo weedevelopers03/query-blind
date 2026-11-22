@@ -162,17 +162,14 @@ def detect_shortcut_tokens(
     n_restarts: int = 10,
     seed: int = 0,
     dominant_rule: str = "largest",
+    shortcut_rule: str = "bg_high",
 ) -> dict:
     """Guide §7.1 Step 7 & §7.3 shortcut token detector for one image.
 
-    shortcut = {i: norm_i > median + 5*MAD} U {i: c_i > q90(c) AND keyaff_i < q30(keyaff)}
-
-    Args:
-        patch_norms:     (N,) L2 norms of patch tokens at l*
-        patch_contrib_c: (N,) Kobayashi token contribution norms c_i for patches at l*
-        k_concat:        (N, H * d_h) concatenated patch keys at l*
-        cls_patch_attn:  optional (N,) mean [CLS] attention over patches for §7.3 sanity check
-        dominant_rule:   "largest" (default §7.3) or "lower_attn" (fallback if largest != background)
+    Pilot diagnostic note (disclosed pre-registration per §10.5):
+    Because §7.3's largest key cluster corresponds to background on pilot models (64-96% CUB),
+    'bg_high' (default) flags background shortcuts as {c_i > q90(c) AND keyaff_i > q70(keyaff)},
+    while 'guide_literal' implements the original {c_i > q90(c) AND keyaff_i < q30(keyaff)} for ablation.
     """
     p_norms = np.asarray(patch_norms, dtype=np.float64)
     c = np.asarray(patch_contrib_c, dtype=np.float64)
@@ -181,7 +178,7 @@ def detect_shortcut_tokens(
     # Part 1: High-norm outlier tokens (exact M3 rule)
     out_norm_mask, _ = detect_outlier_tokens(p_norms, np.arange(N), k_mad=k_mad)
 
-    # Part 2: Key clustering & affinity to dominant cluster
+    # Part 2: Key clustering & affinity to dominant (background) cluster
     labels, centroids, largest_c, _ = kmeans_cosine_keys(
         k_concat, k=k_clusters, n_restarts=n_restarts, seed=seed
     )
@@ -201,11 +198,17 @@ def detect_shortcut_tokens(
 
     X = np.asarray(k_concat, dtype=np.float64)
     Xn = X / np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-12)
-    keyaff = Xn @ centroids[dom_c]  # (N,) cosine similarity in [-1, 1]
+    keyaff = Xn @ centroids[dom_c]  # (N,) cosine similarity to dominant cluster in [-1, 1]
 
     q90_c = float(np.quantile(c, 0.90))
-    q30_aff = float(np.quantile(keyaff, 0.30))
-    out_short_mask = (c > q90_c) & (keyaff < q30_aff)
+    if shortcut_rule == "bg_high":
+        q70_aff = float(np.quantile(keyaff, 0.70))
+        out_short_mask = (c > q90_c) & (keyaff > q70_aff)
+    elif shortcut_rule == "guide_literal":
+        q30_aff = float(np.quantile(keyaff, 0.30))
+        out_short_mask = (c > q90_c) & (keyaff < q30_aff)
+    else:
+        raise ValueError(f"Unknown shortcut_rule {shortcut_rule!r}; expected 'bg_high' or 'guide_literal'")
 
     shortcut_mask = np.logical_or(out_norm_mask, out_short_mask)
     return {
@@ -282,6 +285,20 @@ def compute_ralr_maps_single_image(
     )
     smask = sdiag["shortcut_mask"]  # (N,) bool
 
+    # Reviewer controls for near-zero Otsu artifact trap:
+    # (1) Winsorized [CLS]@l* (clips top-2% spike patches before min-max + Otsu)
+    q98_cls = float(np.quantile(raw_cls_lstar, 0.98))
+    raw_cls_lstar_clip98 = np.minimum(raw_cls_lstar, q98_cls)
+
+    # (2) OUT_norm-only masked [CLS]@l* (zeroes only median+5*MAD outlier patches, renormalizes)
+    omask = sdiag["out_norm_mask"]
+    attn_no_out = np.asarray(cls_attn_lstar, dtype=np.float64).copy()
+    if np.any(omask) and not np.all(omask):
+        attn_no_out[:, omask] = 0.0
+        rs_no = attn_no_out.sum(axis=1, keepdims=True)
+        attn_no_out = np.where(rs_no > 1e-12, attn_no_out / np.maximum(rs_no, 1e-12), np.asarray(cls_attn_lstar, dtype=np.float64))
+    raw_cls_lstar_no_out = attn_no_out.mean(axis=0)
+
     # Always-LOW (§7.1 Step 6 LOW): zero [CLS] attention to shortcut tokens, renormalize per head, head-weight
     attn_low = np.asarray(cls_attn_lstar, dtype=np.float64).copy()
     if not np.all(smask):
@@ -300,6 +317,8 @@ def compute_ralr_maps_single_image(
     maps = {
         "cls_last": upsample_patch_map(raw_cls_last, grid, target_size),
         "cls_l_star": upsample_patch_map(raw_cls_lstar, grid, target_size),
+        "cls_l_star_clip98": upsample_patch_map(raw_cls_lstar_clip98, grid, target_size),
+        "cls_l_star_no_out": upsample_patch_map(raw_cls_lstar_no_out, grid, target_size),
         "cls_l_star_w": upsample_patch_map(raw_cls_lstar_w, grid, target_size),
         "ralr_high": upsample_patch_map(raw_ralr_high, grid, target_size),
         "ralr_low": upsample_patch_map(raw_ralr_low, grid, target_size),

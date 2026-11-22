@@ -238,11 +238,11 @@ def test_c0_vs_c1_artifact_reordering_and_g1_gate():
                 ref = S.debiased_linear_cka(ti[valid], tj[valid], batch_size=512)
                 assert abs(fast_c1[i, j] - ref) < 1e-10, f"Fast shared-Gram R3 C1 mismatch: {fast_c1[i, j]} vs {ref}"
 
-    # Also verify R3 C1 recovers the true pair structure cleanly
-    r3_mats_c0 = S.r3_pairwise_matrices(r3_tok, r3_out, models, condition="C0", batch_size=256, min_batches=10, metrics=("cka",))
-    r3_mats_c1 = S.r3_pairwise_matrices(r3_tok, r3_out, models, condition="C1", batch_size=256, min_batches=10, metrics=("cka",))
-    tau_r3, _ = S.kendall_tau_b_matrices(r3_mats_c0["cka"], r3_mats_c1["cka"])
-    assert tau_r3 < 0.85, f"Expected R3 CKA reordering under C1, got tau={tau_r3}"
+    # Also verify R3 C1 recovers the true pair structure cleanly AND causes far larger shift than matched random drop
+    ctrl = S.r3_matched_random_drop_control(r3_tok, r3_out, models, seeds=(0, 1, 2), batch_size=256, min_batches=10)
+    assert ctrl["tau_c0_c1_out"] < 0.85, f"Expected R3 CKA reordering under C1, got {ctrl}"
+    assert ctrl["delta_tau_out_minus_rand"] < -0.25, f"OUT drop must reorder much more than random drop: {ctrl}"
+    assert ctrl["max_abs_shift_out"] > 3.0 * ctrl["max_abs_shift_rand_mean"], f"OUT shift must dwarf random drop: {ctrl}"
 
 
 def test_otsu_map_iou_and_spearman_grounding():

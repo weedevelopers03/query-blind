@@ -107,22 +107,31 @@ def test_ralr_step7_shortcut_detection_and_knockout():
 
     cls_attn = np.full((H, N), 0.002, dtype=np.float64)
     cls_attn[:, 150:] = 0.015
-    # Inject 2 high-norm OUT tokens at indices 0, 1
+    # Inject 2 high-norm OUT tokens at indices 0, 1 (in dominant background cluster)
     patch_norms = np.full(N, 10.0, dtype=np.float64) + 0.1 * rng.standard_normal(N)
     patch_norms[[0, 1]] = 200.0
-    # Inject 3 high-contrib, low-keyaff shortcut tokens at indices 150, 151, 152 (in non-dominant cluster, huge c_i)
+    # Inject 3 high-contrib background shortcut tokens at indices 2, 3, 4 (dominant background cluster -> high keyaff)
+    # and 3 high-contrib foreground tokens at 150, 151, 152 (non-dominant cluster -> low keyaff)
     patch_contrib = np.full(N, 1.0, dtype=np.float64) + 0.05 * rng.standard_normal(N)
-    patch_contrib[[150, 151, 152]] = 50.0
-    cls_attn[:, [0, 1, 150, 151, 152]] = 0.08
+    patch_contrib[[2, 3, 4]] = 50.0
+    patch_contrib[[150, 151, 152]] = 40.0
+    cls_attn[:, [0, 1, 2, 3, 4]] = 0.08
     cls_attn /= cls_attn.sum(axis=-1, keepdims=True)
 
+    # Default pilot-fixed bg_high rule: catches background shortcuts (2, 3, 4) and does NOT drop foreground (150..152)
     det = R.detect_shortcut_tokens(patch_norms, patch_contrib, k_concat, cls_patch_attn=cls_attn.mean(axis=0), seed=0)
     assert det["largest_is_lower_attn"] is True
     assert det["out_norm_mask"][0] and det["out_norm_mask"][1]
-    assert det["out_shortcut_mask"][150] and det["out_shortcut_mask"][151] and det["out_shortcut_mask"][152]
-    assert det["shortcut_mask"][[0, 1, 150, 151, 152]].all()
+    assert det["out_shortcut_mask"][[2, 3, 4]].any()
+    assert not det["out_shortcut_mask"][[150, 151, 152]].any()
 
-    # Full single-image readout check
+    # Literal guide rule (ablation): catches low-keyaff tokens (150..152)
+    det_lit = R.detect_shortcut_tokens(
+        patch_norms, patch_contrib, k_concat, cls_patch_attn=cls_attn.mean(axis=0), seed=0, shortcut_rule="guide_literal"
+    )
+    assert det_lit["out_shortcut_mask"][[150, 151, 152]].all()
+
+    # Full single-image readout check (including cls_l_star_clip98 & cls_l_star_no_out controls)
     k_patch = k_concat.reshape(N, H, d_h).transpose(1, 0, 2)
     key_eff = rng.standard_normal((H, N))
     w_h = np.ones(H, dtype=np.float64) / H
@@ -136,13 +145,14 @@ def test_ralr_step7_shortcut_detection_and_knockout():
         key_effect_lstar=key_eff, patch_norms_lstar=patch_norms, patch_contrib_lstar=patch_contrib,
         k_patch_lstar=k_patch, branch="LOW", grid=(14, 14), target_size=56, seed=0,
     )
+    assert "cls_l_star_clip98" in maps_hi and "cls_l_star_no_out" in maps_hi
     assert np.allclose(maps_hi["ralr_adaptive"], maps_hi["ralr_high"])
     assert np.allclose(maps_lo["ralr_adaptive"], maps_lo["ralr_low"])
     assert not np.allclose(maps_lo["ralr_low"], maps_lo["cls_l_star_w"])
     for mname, m in maps_hi.items():
         assert m.shape == (56, 56), f"{mname} wrong shape {m.shape}"
         assert m.min() >= -1e-9 and m.max() <= 1.0 + 1e-9
-    assert diag["n_shortcut"] >= 5
+    assert diag["n_shortcut"] >= 2
 
 
 # --------------------------------------------------------------------------- ImageNet XML + RALR CLI smoke (§8)

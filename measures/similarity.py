@@ -928,3 +928,66 @@ def shuffled_floor_calibration(
     proc = orthogonal_procrustes_similarity(X, Y_shuf, d_star=d_star, device=device)["similarity"]
     mknn = mutual_knn_overlap(X, Y_shuf, k=knn_k, device=device)
     return {"cka": float(cka), "procrustes": float(proc), "mknn": float(mknn)}
+
+
+# --------------------------------------------------------------------------- Matched Random-Drop Control (H3 causality)
+def make_matched_random_out_mask(out_mask: np.ndarray, seed: int = 0) -> np.ndarray:
+    """Create a boolean mask dropping the exact same count of patches per image at random positions."""
+    om = np.asarray(out_mask, dtype=bool)
+    I, N = om.shape
+    rng = np.random.default_rng(seed)
+    rand_mask = np.zeros_like(om, dtype=bool)
+    counts = om.sum(axis=1)
+    for i in range(I):
+        k = int(counts[i])
+        if k >= N:
+            rand_mask[i, :] = True
+        elif k > 0:
+            rand_mask[i, rng.choice(N, size=k, replace=False)] = True
+    return rand_mask
+
+
+def r3_matched_random_drop_control(
+    r3_tokens_by_model: dict[str, np.ndarray],
+    r3_out_by_model: dict[str, np.ndarray],
+    model_names: Sequence[str],
+    *,
+    seeds: Sequence[int] = (0, 1, 2, 3, 4),
+    batch_size: int = DEFAULT_MINIBATCH_SIZE,
+    min_batches: int = DEFAULT_MIN_BATCHES,
+    seed: int = 0,
+    device: torch.device | str | None = None,
+) -> dict:
+    """Compare C0 vs C1(OUT-masked) against C0 vs C1_rand(matched-count random-dropped) on R3 CKA (5 seeds)."""
+    mat_c0 = r3_pairwise_matrices(
+        r3_tokens_by_model, r3_out_by_model, model_names, condition="C0",
+        batch_size=batch_size, min_batches=min_batches, seed=seed, device=device, metrics=("cka",),
+    )["cka"]
+    mat_c1_out = r3_pairwise_matrices(
+        r3_tokens_by_model, r3_out_by_model, model_names, condition="C1",
+        batch_size=batch_size, min_batches=min_batches, seed=seed, device=device, metrics=("cka",),
+    )["cka"]
+    tau_out, _ = kendall_tau_b_matrices(mat_c0, mat_c1_out)
+    max_shift_out = float(np.nanmax(np.abs(mat_c0 - mat_c1_out)))
+
+    rand_taus, rand_shifts = [], []
+    for s in seeds:
+        rand_out = {m: make_matched_random_out_mask(r3_out_by_model[m], seed=100 * s + idx) for idx, m in enumerate(model_names)}
+        mat_c1_rand = r3_pairwise_matrices(
+            r3_tokens_by_model, rand_out, model_names, condition="C1",
+            batch_size=batch_size, min_batches=min_batches, seed=seed, device=device, metrics=("cka",),
+        )["cka"]
+        tr, _ = kendall_tau_b_matrices(mat_c0, mat_c1_rand)
+        rand_taus.append(float(tr))
+        rand_shifts.append(float(np.nanmax(np.abs(mat_c0 - mat_c1_rand))))
+
+    return {
+        "n_seeds": len(seeds),
+        "tau_c0_c1_out": float(tau_out),
+        "max_abs_shift_out": float(max_shift_out),
+        "tau_c0_c1_rand_mean": float(np.mean(rand_taus)),
+        "tau_c0_c1_rand_std": float(np.std(rand_taus)),
+        "tau_c0_c1_rand_per_seed": rand_taus,
+        "max_abs_shift_rand_mean": float(np.mean(rand_shifts)),
+        "delta_tau_out_minus_rand": float(tau_out - np.mean(rand_taus)),
+    }

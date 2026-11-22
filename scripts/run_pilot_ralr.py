@@ -72,6 +72,8 @@ from scripts.run_pilot_m1_m2 import (
 METHODS_ORDER = (
     "cls_last",
     "cls_l_star",
+    "cls_l_star_clip98",
+    "cls_l_star_no_out",
     "cls_l_star_w",
     "ralr_high",
     "ralr_low",
@@ -460,6 +462,14 @@ def run_one_model_ralr(
             "box_auc": paired_bootstrap_diff_ci(per_image_box_auc[m], per_image_box_auc["cls_last"], seed=seed),
             "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit[m], per_image_otsu_hit["cls_last"], seed=seed),
         }
+    paired_diffs["ralr_adaptive_minus_cls_l_star_clip98"] = {
+        "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_adaptive"], per_image_box_auc["cls_l_star_clip98"], seed=seed),
+        "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_adaptive"], per_image_otsu_hit["cls_l_star_clip98"], seed=seed),
+    }
+    paired_diffs["ralr_adaptive_minus_cls_l_star_no_out"] = {
+        "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_adaptive"], per_image_box_auc["cls_l_star_no_out"], seed=seed),
+        "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_adaptive"], per_image_otsu_hit["cls_l_star_no_out"], seed=seed),
+    }
     paired_diffs["ralr_high_cleaned_minus_ralr_high"] = {
         "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_high_cleaned"], per_image_box_auc["ralr_high"], seed=seed),
         "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_high_cleaned"], per_image_otsu_hit["ralr_high"], seed=seed),
@@ -569,11 +579,20 @@ def write_ralr_report(results: dict[str, dict], dataset: str, out_dir: Path) -> 
         )
 
     p_sign_auc = float(binomtest(wins_auc_lstar, n_models, 0.5, alternative="greater").pvalue) if n_models > 0 else float("nan")
+    p_sign_auc_2 = float(binomtest(wins_auc_lstar, n_models, 0.5, alternative="two-sided").pvalue) if n_models > 0 else float("nan")
     p_sign_otsu = float(binomtest(wins_otsu_lstar, n_models, 0.5, alternative="greater").pvalue) if n_models > 0 else float("nan")
-    lines.append("\n## 3. Gate G3 Preview (Sign Test Across Backbones vs `[CLS]@l*`, Guide §11.2)\n")
-    lines.append(f"- **RALR beats `[CLS]@l*` on box-AUC:** `{wins_auc_lstar}/{n_models}` backbones (one-sided sign test `p = {p_sign_auc:.4f}`)")
-    lines.append(f"- **RALR beats `cls_last` on box-AUC:** `{wins_auc_last}/{n_models}` backbones")
-    lines.append(f"- **RALR beats `[CLS]@l*` on Otsu CorLoc@0.5:** `{wins_otsu_lstar}/{n_models}` backbones (one-sided sign test `p = {p_sign_otsu:.4f}`)")
+    p_sign_otsu_2 = float(binomtest(wins_otsu_lstar, n_models, 0.5, alternative="two-sided").pvalue) if n_models > 0 else float("nan")
+    wins_otsu_clip98 = sum(1 for r in results.values() if r["paired_diffs"]["ralr_adaptive_minus_cls_l_star_clip98"]["corloc_otsu"]["mean_diff"] > 0)
+    wins_otsu_no_out = sum(1 for r in results.values() if r["paired_diffs"]["ralr_adaptive_minus_cls_l_star_no_out"]["corloc_otsu"]["mean_diff"] > 0)
+    p_clip98 = float(binomtest(wins_otsu_clip98, n_models, 0.5, alternative="greater").pvalue) if n_models > 0 else float("nan")
+    p_no_out = float(binomtest(wins_otsu_no_out, n_models, 0.5, alternative="greater").pvalue) if n_models > 0 else float("nan")
+
+    lines.append("\n## 3. Gate G3 Preview (Sign Test Across Backbones vs `[CLS]@l*` & Spike-Clipped Controls, Guide §11.2)\n")
+    lines.append(f"- **RALR beats `[CLS]@l*` on box-AUC:** `{wins_auc_lstar}/{n_models}` (one-sided `p = {p_sign_auc:.4f}`, two-sided `p = {p_sign_auc_2:.4f}`)")
+    lines.append(f"- **RALR beats `cls_last` on box-AUC:** `{wins_auc_last}/{n_models}`")
+    lines.append(f"- **RALR beats `[CLS]@l*` on Otsu CorLoc@0.5:** `{wins_otsu_lstar}/{n_models}` (one-sided `p = {p_sign_otsu:.4f}`, two-sided `p = {p_sign_otsu_2:.4f}`)")
+    lines.append(f"- **RALR beats `cls_l_star_clip98` (top-2% winsorized) on Otsu CorLoc@0.5:** `{wins_otsu_clip98}/{n_models}` (one-sided `p = {p_clip98:.4f}`)")
+    lines.append(f"- **RALR beats `cls_l_star_no_out` (OUT_norm masked) on Otsu CorLoc@0.5:** `{wins_otsu_no_out}/{n_models}` (one-sided `p = {p_no_out:.4f}`)")
 
     md_text = "\n".join(lines) + "\n"
     (out_dir / "summary_ralr.md").write_text(md_text)
