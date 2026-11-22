@@ -225,6 +225,19 @@ def test_c0_vs_c1_artifact_reordering_and_g1_gate():
         f"Gate G1 should trigger on artifact-scrambled R2 CKA: {st_r2['diff_same_minus_noise']}"
     )
 
+    # Also verify fast shared-Gram R3 C1 matches exact brute-force pairwise debiased_linear_cka (N <= batch_size)
+    small_tok = {m: r3_tok[m][:30] for m in models[:3]}  # 30*8 = 240 <= 512
+    small_out = {m: r3_out[m][:30] for m in models[:3]}
+    fast_c1 = S.r3_pairwise_matrices(small_tok, small_out, models[:3], condition="C1", batch_size=512, metrics=("cka",))["cka"]
+    for i, mi in enumerate(models[:3]):
+        for j, mj in enumerate(models[:3]):
+            if i < j:
+                ti = small_tok[mi].reshape(-1, D)
+                tj = small_tok[mj].reshape(-1, D)
+                valid = ~(small_out[mi].reshape(-1) | small_out[mj].reshape(-1))
+                ref = S.debiased_linear_cka(ti[valid], tj[valid], batch_size=512)
+                assert abs(fast_c1[i, j] - ref) < 1e-10, f"Fast shared-Gram R3 C1 mismatch: {fast_c1[i, j]} vs {ref}"
+
     # Also verify R3 C1 recovers the true pair structure cleanly
     r3_mats_c0 = S.r3_pairwise_matrices(r3_tok, r3_out, models, condition="C0", batch_size=256, min_batches=10, metrics=("cka",))
     r3_mats_c1 = S.r3_pairwise_matrices(r3_tok, r3_out, models, condition="C1", batch_size=256, min_batches=10, metrics=("cka",))

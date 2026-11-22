@@ -366,9 +366,11 @@ def analyze_layer_m4(
     }
 
     # --- R1: global token (unchanged under C1; still compute C0 matrices + map IoU grounding)
+    t_s = time.perf_counter()
     r1_cka = sim_mod.debiased_cka_matrix(r1_map, model_names, batch_size=batch_size, min_batches=min_batches, seed=seed, device=device)
     r1_proc, r1_evr = sim_mod.procrustes_matrix(r1_map, model_names, d_star=d_star, device=device)
     r1_mknn = sim_mod.mutual_knn_matrix(r1_map, model_names, k=knn_k, device=device)
+    print(f"  [l={layer}] R1 done ({time.perf_counter() - t_s:.1f}s)", flush=True)
     results_layer["levels"]["R1"] = {
         "note": "R1 (global token) is unchanged under C1 patch masking (Guide §5.3); tau(C0, C1) = 1.0 by construction.",
         "procrustes_evr": {m: round(v, 4) for m, v in r1_evr.items()},
@@ -393,9 +395,11 @@ def analyze_layer_m4(
     _, r2_evr_c1 = sim_mod.procrustes_matrix(r2_c1_map, model_names, d_star=d_star, device=device)
     r2_metrics = {}
     for metric in ("cka", "procrustes", "mknn"):
+        t_s = time.perf_counter()
+        n_sp = n_splits_r2 if metric == "cka" else min(n_splits_r2, 40)
         st = sim_mod.split_half_tau_test(
             r2_c0_map, r2_c1_map, model_names, metric=metric,
-            n_splits=n_splits_r2, batch_size=batch_size, min_batches=min_batches,
+            n_splits=n_sp, batch_size=batch_size, min_batches=min_batches,
             d_star=d_star, knn_k=knn_k, seed=seed, device=device,
         )
         m_c0 = st.pop("mat_c0_full")
@@ -407,6 +411,11 @@ def analyze_layer_m4(
         st["map_iou_spearman_c0"] = sim_mod.correlate_similarity_with_map_iou(m_c0, iou_mat)
         st["map_iou_spearman_c1"] = sim_mod.correlate_similarity_with_map_iou(m_c1, iou_mat)
         r2_metrics[metric] = st
+        print(
+            f"  [l={layer}] R2 {metric:<10s} tau={st['tau_c0_c1_full']:.3f} vs noise={st['tau_noise']['mean']:.3f} "
+            f"({time.perf_counter() - t_s:.1f}s)",
+            flush=True,
+        )
 
     results_layer["levels"]["R2"] = {
         "procrustes_evr_c0": {m: round(v, 4) for m, v in r2_evr_c0.items()},
@@ -415,6 +424,7 @@ def analyze_layer_m4(
     }
 
     # --- R3: subsampled individual patch tokens (N'=8 per image; C1 drops union OUT rows per pair)
+    t_s = time.perf_counter()
     r3_c0_mats = sim_mod.r3_pairwise_matrices(
         r3_map, r3_out_map, model_names, condition="C0",
         batch_size=batch_size, min_batches=min_batches, d_star=d_star, knn_k=knn_k,
@@ -425,6 +435,7 @@ def analyze_layer_m4(
         batch_size=batch_size, min_batches=min_batches, d_star=d_star, knn_k=knn_k,
         seed=seed, device=device, metrics=("cka", "procrustes", "mknn"),
     )
+    print(f"  [l={layer}] R3 full C0/C1 matrices (CKA+Procrustes+mKNN) done ({time.perf_counter() - t_s:.1f}s)", flush=True)
 
     r3_metrics = {}
     for metric in ("cka", "procrustes", "mknn"):
@@ -442,8 +453,9 @@ def analyze_layer_m4(
             "map_iou_spearman_c0": sim_mod.correlate_similarity_with_map_iou(m_c0, iou_mat),
             "map_iou_spearman_c1": sim_mod.correlate_similarity_with_map_iou(m_c1, iou_mat),
         }
-        # Split-half tau_noise for R3 CKA (primary H3/G1 test) and Procrustes (fast); optional for mKNN
-        if compute_r3_splits and metric in ("cka", "procrustes"):
+        # Split-half tau_noise for R3 CKA (primary H3/G1 test, fast shared-Gram)
+        if compute_r3_splits and metric == "cka":
+            t_s = time.perf_counter()
             st = sim_mod.split_half_tau_test(
                 r3_map, r3_map, model_names, metric=metric,
                 n_splits=n_splits_r3, batch_size=batch_size, min_batches=min_batches,
@@ -453,6 +465,11 @@ def analyze_layer_m4(
             st.pop("mat_c0_full", None)
             st.pop("mat_c1_full", None)
             entry.update(st)
+            print(
+                f"  [l={layer}] R3 cka splits ({n_splits_r3}) tau={st['tau_c0_c1_full']:.3f} "
+                f"vs noise={st['tau_noise']['mean']:.3f} ({time.perf_counter() - t_s:.1f}s)",
+                flush=True,
+            )
         r3_metrics[metric] = entry
 
     results_layer["levels"]["R3"] = {"metrics": r3_metrics}
