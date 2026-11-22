@@ -160,6 +160,7 @@ def load_pilot_model(
     device: torch.device,
     weights_cache_dir: Path,
     smoke_random: bool = False,
+    keep_head: bool = False,
 ):
     """Load one pilot-8 model + adapter + exact per-model normalization (mean, std) + target_size."""
     import timm
@@ -179,7 +180,7 @@ def load_pilot_model(
         mean, std = get_model_norm_stats(model, "open_clip_vit", openclip_preprocess=preprocess)
         return adapter, model.to(device), mean, std, target_size
 
-    extra_kw = {"num_classes": 0}
+    extra_kw = {} if keep_head else {"num_classes": 0}
     if spec["patch_size"] == 14:
         extra_kw.update(img_size=target_size, dynamic_img_size=True)
 
