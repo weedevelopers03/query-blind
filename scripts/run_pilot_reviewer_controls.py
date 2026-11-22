@@ -150,10 +150,10 @@ def run_fix3_eligible_only(results_root: Path) -> dict:
                 kd_elig_lstar[m] = float(best["omega2_key"])
 
         out[ds_name] = {
-            "final_all_n8": keydom.fix3_qii_keydom_spearman(qii_all_last, kd_all_last),
-            "final_eligible_only": keydom.fix3_qii_keydom_spearman(qii_elig_last, kd_elig_last),
-            "l_star_all_n8": keydom.fix3_qii_keydom_spearman(qii_all_lstar, kd_all_lstar),
-            "l_star_eligible_only": keydom.fix3_qii_keydom_spearman(qii_elig_lstar, kd_elig_lstar),
+            "final_all_n8": keydom.qii_kd_spearman(qii_all_last, kd_all_last),
+            "final_eligible_only": keydom.qii_kd_spearman(qii_elig_last, kd_elig_last),
+            "l_star_all_n8": keydom.qii_kd_spearman(qii_all_lstar, kd_all_lstar),
+            "l_star_eligible_only": keydom.qii_kd_spearman(qii_elig_lstar, kd_elig_lstar),
         }
     return out
 
