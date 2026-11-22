@@ -35,7 +35,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from adapters.base import attn_probs
-from eval.preprocess import build_image_transform, load_cub_pilot_split
+from eval.preprocess import build_image_transform, load_cub_pilot_split, load_imagenet_val_pilot_split
 from extract.cache import last_third_blocks
 from measures import similarity as sim_mod
 from measures._common import compute_head_weights, get_output_proj_and_layerscale, patch_attention
@@ -79,6 +79,21 @@ def load_image_paths(args) -> list[tuple[int, Path]]:
             sel = np.sort(rng.choice(len(rows), size=args.limit, replace=False))
             rows = [rows[i] for i in sel]
         return rows
+
+    if args.dataset == "imagenet":
+        if not args.images_dir:
+            raise ValueError("--images_dir is required for --dataset imagenet (ImageNet val directory)")
+        split_f = args.split_file
+        if split_f == str(REPO_ROOT / "configs" / "splits" / "cub_pilot_500_seed0.txt"):
+            split_f = str(REPO_ROOT / "configs" / "splits" / "imagenet_pilot_1000_seed0.txt")
+        samples = load_imagenet_val_pilot_split(
+            args.images_dir,
+            args.imagenet_xml_dir,
+            n_images=args.limit or 1000,
+            seed=args.seed,
+            split_file=split_f,
+        )
+        return [(i, s.image_path) for i, s in enumerate(samples)]
 
     if args.dataset == "folder":
         if not args.images_dir:
@@ -547,10 +562,11 @@ def format_m4_markdown(report: dict) -> str:
 # --------------------------------------------------------------------------- CLI
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Run Measure M4 (Artifact-Controlled Similarity) on Pilot-8.")
-    ap.add_argument("--dataset", choices=["cub", "waterbirds", "folder"], default="cub")
+    ap.add_argument("--dataset", choices=["cub", "waterbirds", "imagenet", "folder"], default="cub")
     ap.add_argument("--cub_dir", default=None)
     ap.add_argument("--waterbirds_dir", default=None)
     ap.add_argument("--images_dir", default=None)
+    ap.add_argument("--imagenet_xml_dir", default=None)
     ap.add_argument("--split_file", default=str(REPO_ROOT / "configs" / "splits" / "cub_pilot_500_seed0.txt"))
     ap.add_argument("--out_dir", default="results/pilot_similarity_m4")
     ap.add_argument("--models", default="all")

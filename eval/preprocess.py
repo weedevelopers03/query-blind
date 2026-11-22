@@ -285,3 +285,154 @@ def save_box_overlays(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path)
     return out_path
+
+
+# --------------------------------------------------------------------------- ImageNet-1K val + ILSVRC XML (§8.1, §8.4)
+@dataclass(frozen=True)
+class ImageNetSample:
+    image_id: str  # e.g. "ILSVRC2012_val_00000001"
+    image_path: Path
+    xml_path: Path | None
+    boxes_0based: tuple[tuple[float, float, float, float], ...]  # multi-object support (§8.3)
+
+
+def parse_ilsvrc_xml_boxes(xml_path: str | Path) -> list[tuple[float, float, float, float]]:
+    """Parse all <object><bndbox> annotations from an ILSVRC2012 validation XML file.
+
+    ILSVRC2012 val XMLs use 0-based coordinates (xmin >= 0, ymin >= 0). Clamps to [0, W] x [0, H]
+    when <size> is present and drops degenerate zero-area boxes.
+    """
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    size_el = root.find("size")
+    w_lim = float(size_el.findtext("width")) if (size_el is not None and size_el.findtext("width")) else None
+    h_lim = float(size_el.findtext("height")) if (size_el is not None and size_el.findtext("height")) else None
+
+    boxes: list[tuple[float, float, float, float]] = []
+    for obj in root.findall("object"):
+        bb = obj.find("bndbox")
+        if bb is None:
+            continue
+        x1 = float(bb.findtext("xmin", "0"))
+        y1 = float(bb.findtext("ymin", "0"))
+        x2 = float(bb.findtext("xmax", "0"))
+        y2 = float(bb.findtext("ymax", "0"))
+        if w_lim is not None:
+            x1 = max(0.0, min(x1, w_lim))
+            x2 = max(0.0, min(x2, w_lim))
+        if h_lim is not None:
+            y1 = max(0.0, min(y1, h_lim))
+            y2 = max(0.0, min(y2, h_lim))
+        if x2 > x1 and y2 > y1:
+            boxes.append((x1, y1, x2, y2))
+    return boxes
+
+
+def load_imagenet_val_pilot_split(
+    images_dir: str | Path,
+    xml_dir: str | Path | None = None,
+    *,
+    n_images: int = 1000,
+    seed: int = 0,
+    split_file: str | Path | None = None,
+) -> list[ImageNetSample]:
+    """Load Guide §8.4 ImageNet-1K val pilot split (1,000 images, seed 0) with multi-object XML boxes.
+
+    Supports both flat (val/*.JPEG) and class-subfolder (val/n01440764/*.JPEG) directory layouts.
+    If split_file exists, reads those exact image stems verbatim (Guide §8.1: never regenerate).
+    """
+    img_root = Path(images_dir)
+    if not img_root.is_dir():
+        raise FileNotFoundError(f"ImageNet val images_dir not found: {img_root}")
+
+    exts = {".jpeg", ".jpg", ".png"}
+    stem_to_img: dict[str, Path] = {}
+    for p in sorted(img_root.rglob("*")):
+        if p.is_file() and p.suffix.lower() in exts:
+            stem_to_img[p.stem] = p
+    if not stem_to_img:
+        raise FileNotFoundError(f"No ImageNet images found under {img_root}")
+
+    stem_to_xml: dict[str, Path] = {}
+    if xml_dir is not None:
+        xr = Path(xml_dir)
+        if not xr.is_dir():
+            raise FileNotFoundError(f"ImageNet XML dir not found: {xr}")
+        for xp in sorted(xr.rglob("*.xml")):
+            stem_to_xml[xp.stem] = xp
+        eligible_stems = sorted(s for s in stem_to_img if s in stem_to_xml)
+    else:
+        eligible_stems = sorted(stem_to_img.keys())
+
+    if not eligible_stems:
+        raise FileNotFoundError(f"No matching image/XML pairs found under {img_root} and {xml_dir}")
+
+    split_path = Path(split_file) if split_file is not None else None
+    if split_path is not None and split_path.exists():
+        chosen_stems = [ln.strip() for ln in split_path.read_text().splitlines() if ln.strip()]
+    else:
+        rng = np.random.default_rng(int(seed))
+        k = min(int(n_images), len(eligible_stems))
+        idx = np.sort(rng.choice(len(eligible_stems), size=k, replace=False))
+        chosen_stems = [eligible_stems[int(i)] for i in idx]
+        if split_path is not None:
+            split_path.parent.mkdir(parents=True, exist_ok=True)
+            split_path.write_text("\n".join(chosen_stems) + "\n")
+
+    samples: list[ImageNetSample] = []
+    for st in chosen_stems:
+        if st not in stem_to_img:
+            raise FileNotFoundError(f"Split stem {st!r} not found under {img_root}")
+        xp = stem_to_xml.get(st)
+        boxes = tuple(parse_ilsvrc_xml_boxes(xp)) if xp is not None else ()
+        samples.append(ImageNetSample(image_id=st, image_path=stem_to_img[st], xml_path=xp, boxes_0based=boxes))
+    return samples
+
+
+def get_transformed_imagenet_gt_mask(
+    sample: ImageNetSample,
+    orig_w: int,
+    orig_h: int,
+    target_size: int,
+) -> tuple[np.ndarray, list[tuple[float, float, float, float]]]:
+    """Guide §8.3: union of all transformed boxes for FG mask + list of transformed boxes for multi-instance CorLoc."""
+    tboxes = [transform_box_resize_center_crop(b, orig_w, orig_h, target_size) for b in sample.boxes_0based]
+    tboxes = [b for b in tboxes if b[2] > b[0] and b[3] > b[1]]
+    union_mask = np.zeros((target_size, target_size), dtype=np.uint8)
+    for tb in tboxes:
+        union_mask = np.maximum(union_mask, box_to_pixel_mask(tb, target_size))
+    return union_mask, tboxes
+
+
+def save_imagenet_box_overlays(
+    samples: Sequence[ImageNetSample],
+    target_size: int,
+    out_path: str | Path,
+    n_images: int = 20,
+) -> Path:
+    """Guide §8.2: 4x5 visual spot-check grid of transformed ImageNet multi-object XML boxes."""
+    chosen = list(samples)[:n_images]
+    cols = 5
+    rows = max(1, int(np.ceil(len(chosen) / cols)))
+    pad = 4
+    canvas = Image.new("RGB", (cols * (target_size + pad) + pad, rows * (target_size + pad) + pad), (30, 30, 30))
+    vis_tf = T.Compose([T.Resize(target_size, interpolation=T.InterpolationMode.BICUBIC), T.CenterCrop(target_size)])
+
+    for idx, s in enumerate(chosen):
+        img = Image.open(s.image_path).convert("RGB")
+        ow, oh = img.size
+        cropped = vis_tf(img)
+        _, tboxes = get_transformed_imagenet_gt_mask(s, ow, oh, target_size)
+        draw = ImageDraw.Draw(cropped)
+        for tb in tboxes:
+            draw.rectangle([tb[0], tb[1], tb[2], tb[3]], outline=(40, 255, 80), width=2)
+        draw.text((4, 4), s.image_id[-8:], fill=(255, 255, 0))
+        r, c = divmod(idx, cols)
+        canvas.paste(cropped, (pad + c * (target_size + pad), pad + r * (target_size + pad)))
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path)
+    return out_path

@@ -42,11 +42,15 @@ from adapters.base import attn_probs
 from adapters.open_clip_vit import OpenCLIPViTAdapter
 from adapters.timm_vit import TimmViTAdapter
 from eval.preprocess import (
+    ImageNetSample,
     build_image_transform,
     get_model_norm_stats,
     get_transformed_gt_mask,
+    get_transformed_imagenet_gt_mask,
     load_cub_pilot_split,
+    load_imagenet_val_pilot_split,
     save_box_overlays,
+    save_imagenet_box_overlays,
     target_size_for_patch_size,
 )
 from extract.cache import last_third_blocks
@@ -555,7 +559,10 @@ def run_one_model(
             pil = Image.open(s.image_path).convert("RGB")
             ow, oh = pil.size
             imgs_t.append(tf(pil))
-            mask, _ = get_transformed_gt_mask(s, ow, oh, target_size, prefer_seg=prefer_seg)
+            if isinstance(s, ImageNetSample):
+                mask, _ = get_transformed_imagenet_gt_mask(s, ow, oh, target_size)
+            else:
+                mask, _ = get_transformed_gt_mask(s, ow, oh, target_size, prefer_seg=prefer_seg)
             gt_masks.append(mask)
         xb = torch.stack(imgs_t, dim=0).to(device)
         batch_out = extract_last_third_batch(adapter, model, xb, layers)
@@ -581,7 +588,11 @@ def run_one_model(
     row_meta = reg_meta.get(model_id, {})
     objective = row_meta.get("objective", "unknown")
     set_name = row_meta.get("set", "pilot")
-    image_ids_arr = np.array([s.cub_id for s in samples], dtype=np.int64)
+    image_ids_arr = (
+        np.array([s.image_id for s in samples], dtype=object)
+        if samples and isinstance(samples[0], ImageNetSample)
+        else np.array([s.cub_id for s in samples], dtype=np.int64)
+    )
     grid_str = f"{grid[0]}x{grid[1]}"
 
     qii_col_chunks: list[dict[str, np.ndarray]] = []
@@ -858,12 +869,15 @@ def write_cross_model_report(model_results: dict[str, dict], out_dir: Path) -> d
 
 # --------------------------------------------------------------------------- CLI
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Run pilot Measures M1 (QII) + M2 (omega^2_key) on CUB-200-2011.")
-    ap.add_argument("--cub_dir", required=True, help="Path to CUB_200_2011 directory (containing images.txt).")
+    ap = argparse.ArgumentParser(description="Run pilot Measures M1 (QII) + M2 (omega^2_key) on CUB-200-2011 or ImageNet-1K val.")
+    ap.add_argument("--dataset", choices=["cub", "imagenet"], default="cub")
+    ap.add_argument("--cub_dir", default=None, help="Path to CUB_200_2011 directory (containing images.txt).")
+    ap.add_argument("--images_dir", default=None, help="Path to ImageNet-1K val images directory (for --dataset imagenet).")
+    ap.add_argument("--imagenet_xml_dir", default=None, help="Path to ImageNet-1K val XML annotations directory.")
     ap.add_argument("--seg_dir", default=None, help="Optional path to CUB segmentations directory.")
     ap.add_argument("--out_dir", default="results/pilot_m1_m2_cub", help="Output directory.")
-    ap.add_argument("--split_file", default="configs/splits/cub_pilot_500_seed0.txt", help="Fixed CUB pilot split ID file.")
-    ap.add_argument("--n_images", type=int, default=500, help="Number of CUB test images (Guide §8.4: 500).")
+    ap.add_argument("--split_file", default=None, help="Fixed split ID file (defaults to configs/splits/{cub_pilot_500|imagenet_pilot_1000}_seed0.txt).")
+    ap.add_argument("--n_images", type=int, default=None, help="Number of images (defaults: 500 CUB, 1000 ImageNet).")
     ap.add_argument("--seed", type=int, default=0, help="Split RNG seed (Guide §8.4: 0).")
     ap.add_argument("--models", default="all", help="'all' for all 8 pilot models, or comma-separated IDs.")
     ap.add_argument("--batch_size", type=int, default=32)
@@ -878,9 +892,11 @@ def main(argv=None):
     args = parse_args(argv)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    split_file = Path(args.split_file)
+    default_split = "configs/splits/cub_pilot_500_seed0.txt" if args.dataset == "cub" else "configs/splits/imagenet_pilot_1000_seed0.txt"
+    split_file = Path(args.split_file or default_split)
     if not split_file.is_absolute():
         split_file = REPO_ROOT / split_file
+    n_images = args.n_images if args.n_images is not None else (500 if args.dataset == "cub" else 1000)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_ids = list(PILOT8_SPECS.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
@@ -888,14 +904,28 @@ def main(argv=None):
         if mid not in PILOT8_SPECS:
             raise ValueError(f"Unknown pilot model {mid!r}; choices: {list(PILOT8_SPECS.keys())}")
 
-    samples = load_cub_pilot_split(
-        args.cub_dir, n_images=args.n_images, seed=args.seed, split_file=split_file, seg_dir=args.seg_dir,
-    )
-    print(f"Loaded {len(samples)} CUB test images (split file: {split_file})", flush=True)
-
-    # Save 20-image visual box overlay spot-checks at 224px and 196px (Guide §8.2 & Review (3))
-    save_box_overlays(samples, 224, out_dir / "box_overlays_20_224px.png", n_images=20)
-    save_box_overlays(samples, 196, out_dir / "box_overlays_20_196px.png", n_images=20)
+    if args.dataset == "cub":
+        if not args.cub_dir:
+            raise ValueError("--cub_dir is required for --dataset cub")
+        samples = load_cub_pilot_split(
+            args.cub_dir, n_images=n_images, seed=args.seed, split_file=split_file, seg_dir=args.seg_dir,
+        )
+        print(f"Loaded {len(samples)} CUB test images (split file: {split_file})", flush=True)
+        save_box_overlays(samples, 224, out_dir / "box_overlays_20_224px.png", n_images=20)
+        save_box_overlays(samples, 196, out_dir / "box_overlays_20_196px.png", n_images=20)
+        ds_label = "CUB-200-2011"
+        n_seg = sum(s.seg_path is not None for s in samples)
+    else:
+        if not args.images_dir or not args.imagenet_xml_dir:
+            raise ValueError("--images_dir and --imagenet_xml_dir are required for --dataset imagenet")
+        samples = load_imagenet_val_pilot_split(
+            args.images_dir, args.imagenet_xml_dir, n_images=n_images, seed=args.seed, split_file=split_file,
+        )
+        print(f"Loaded {len(samples)} ImageNet-1K val images (split file: {split_file})", flush=True)
+        save_imagenet_box_overlays(samples, 224, out_dir / "box_overlays_20_224px.png", n_images=20)
+        save_imagenet_box_overlays(samples, 196, out_dir / "box_overlays_20_196px.png", n_images=20)
+        ds_label = "ImageNet-1K-val"
+        n_seg = 0
 
     reg_meta = _load_registry_meta()
     weights_cache = Path(args.weights_cache_dir)
@@ -926,10 +956,10 @@ def main(argv=None):
             )
         },
         "device": str(device),
-        "dataset": "CUB-200-2011",
+        "dataset": ds_label,
         "split_file": str(split_file),
         "n_images": len(samples),
-        "n_with_seg_mask": sum(s.seg_path is not None for s in samples),
+        "n_with_seg_mask": n_seg,
         "smoke_random": bool(args.smoke_random),
         "total_seconds": round(time.perf_counter() - t_all, 2),
         "throughput_by_model": {
