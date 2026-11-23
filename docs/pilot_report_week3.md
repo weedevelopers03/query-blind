@@ -18,7 +18,7 @@ I have completed all seven deliverables required by Methodology Guide §11.1 acr
   - *Criterion 2 (M4 artifact-controlled similarity `τ(C0, C1) < τ_noise`):* **Decisive pass on all three datasets** (`CUB-500`, `Waterbirds-2,000`, `ImageNet-1,000`). Masking high-norm outlier tokens (`OUT`, $> \text{median} + 5\,\text{MAD}$) drops patch-level (`R3`) debiased CKA rank correlation from split-half noise `τ_noise = 0.939–0.983` down to `τ(C0, C1) = 0.090–0.476` (`Δτ = -0.505` to `-0.864`, both same-half and cross-half 95% CIs far below zero), whereas a 5-seed matched-count random patch drop stays at `τ(C0, C1_rand) = 0.967–0.997` (`sd ≤ 0.007`).
 - **Hypothesis Status After Pilot:**
   - **H1 (Query-Blind Localization as pre-registered): Not supported.** All 8 ViTs exhibit high in-cone invariance (`QII_S4 = 0.92–1.00`) because `[CLS]` queries concentrate tightly around their empirical mean ($\cos(\mathbf{q}, \boldsymbol{\mu}) = 0.85–0.999$). This matches the proposal's own *"architectural, not objective-driven"* fallback outcome.
-  - **H2 / H2b (Routing Differences):** **Supported on M3 Waterbirds background main effect** at matched layers `l=8` (`3.1×` DeiT-III, `7.3×` OpenCLIP vs DINO) and `l=11` (`1.75×` OpenCLIP, `2.7×` DeiT-III vs DINO); exploratory CUB I1 query replacement does **not** separate objectives under `S2–S4`. Confirmatory ImageNet-1K I1/I2 will run only after freezing the OSF pre-registration.
+  - **H2 / H2b (Routing Differences):** **Supported on M3 Waterbirds background main effect** against size-matched SSL ranges at matched layers `l=8` (`deit3` `1.9×–3.1×` `S/16` SSL; `openclip` `2.7×–3.9×` `B`-scale SSL) and `l=11` (`deit3` `2.7×–3.3×` `S/16` SSL; `openclip` `1.6×–1.8×` `B`-scale SSL). Exploratory CUB I1 query replacement is **not supported** (`deit3_small_patch16_224` improves `+0.021–0.024`). ImageNet-1K I1/I2 and I5 outputs are held in a separate review packet pending inspection before integration into this report.
   - **H3 (Artifact-Distorted Similarity):** **Strongly supported** for `C1` masking across all 3 datasets; `C2` (test-time registers via I3) remains to be tested.
   - **H4 (Registers):** `QII_S4` survives registers (`0.972 → 0.983` CUB; `0.919 → 0.938` IN-1K) and `share_OUT` drops `93%` (`0.15 → 0.01`) as mass shifts to `REG` (`0.15`). The `+4.3 pt` CUB / `+5.7 pt` IN-1K map `box-AUC` gain is a map-quality effect rather than H4 itself.
   - **H5 (RALR):** **Mixed on primary `box-AUC`** (CUB `6/8`, two-sided `p = 0.289`; IN-1K `4/8`, two-sided `p = 1.000`), **strong on zero-tuning `Otsu CorLoc@0.5`** (CUB `7/8`, `0.440 → 0.693`; IN-1K `8/8`, `0.329 → 0.599`, two-sided `p = 0.0078`, beating top-2% winsorized and OUT-masked `[CLS]@l*` controls on `8/8` IN-1K models).
@@ -100,24 +100,27 @@ Evaluated on the **full `5,794`-image Waterbirds test set** (`2,897` congruent /
 | Model | Layer | `BSS_norm` | Bg Main Effect (`W − L`) [95% CI] | Excl 0? | Balanced Interaction (`C − I`) [95% CI] | Excl 0? |
 |---|---:|---:|---|---:|---|---:|
 | `dino_vits16` | `l=8` | 0.192 | `+0.0254 [+0.0189, +0.0316]` | Yes | `-0.0034 [-0.0100, +0.0026]` | No |
-| `deit3_small_patch16_224` | `l=8` | 0.485 | **`+0.0778 [+0.0659, +0.0895]`** (`3.1×` DINO) | Yes | **`-0.0141 [-0.0262, -0.0025]`** | **Yes** |
+| `deit3_small_patch16_224` | `l=8` | 0.485 | **`+0.0778 [+0.0659, +0.0895]`** (`1.9×–3.1×` S/16 SSL) | Yes | **`-0.0141 [-0.0262, -0.0025]`** | **Yes** |
 | `ibot_vits16` | `l=8` | 0.216 | `+0.0410 [+0.0347, +0.0477]` | Yes | `-0.0041 [-0.0108, +0.0019]` | No |
 | `mocov3_vitb16` | `l=8` | 0.297 | `+0.0473 [+0.0382, +0.0565]` | Yes | `-0.0083 [-0.0178, +0.0004]` | No |
 | `mae_vitb16` | `l=8` | 0.678 | `-0.0647 [-0.0754, -0.0535]` | Yes | `-0.0060 [-0.0166, +0.0040]` | No |
 | `dinov2_vitb14` | `l=8` | 0.459 | `+0.0685 [+0.0569, +0.0801]` | Yes | `-0.0079 [-0.0207, +0.0033]` | No |
 | `dinov2_vitb14_reg` | `l=8` | 0.347 | `+0.0568 [+0.0470, +0.0660]` | Yes | `-0.0049 [-0.0150, +0.0041]` | No |
-| `openclip_vitb16` | `l=8` | 1.560 | **`+0.1854 [+0.1396, +0.2326]`** (`7.3×` DINO) | Yes | `-0.0188 [-0.0717, +0.0277]` | No |
+| `openclip_vitb16` | `l=8` | 1.560 | **`+0.1854 [+0.1396, +0.2326]`** (`2.7×–3.9×` B-scale SSL) | Yes | `-0.0188 [-0.0717, +0.0277]` | No |
 | `dino_vits16` | `l=11` | 0.206 | `+0.0374 [+0.0309, +0.0437]` | Yes | `-0.0021 [-0.0088, +0.0041]` | No |
-| `deit3_small_patch16_224` | `l=11` | 0.314 | **`+0.1015 [+0.0459, +0.1387]`** (`2.7×` DINO) | Yes | `-0.0235 [-0.0815, +0.0131]` | No |
+| `deit3_small_patch16_224` | `l=11` | 0.314 | **`+0.1015 [+0.0459, +0.1387]`** (`2.7×–3.3×` S/16 SSL) | Yes | `-0.0235 [-0.0815, +0.0131]` | No |
 | `ibot_vits16` | `l=11` | 0.209 | `+0.0303 [+0.0231, +0.0375]` | Yes | `-0.0020 [-0.0095, +0.0051]` | No |
 | `mocov3_vitb16` | `l=11` | 0.315 | `+0.0394 [+0.0279, +0.0510]` | Yes | `-0.0086 [-0.0208, +0.0033]` | No |
 | `mae_vitb16` | `l=11` | 0.415 | `+0.0239 [+0.0132, +0.0342]` | Yes | `-0.0191 [-0.0299, -0.0083]` | Yes |
 | `dinov2_vitb14` | `l=11` | 0.226 | `+0.0360 [+0.0249, +0.0475]` | Yes | `+0.0043 [-0.0067, +0.0152]` | No |
 | `dinov2_vitb14_reg` | `l=11` | 0.153 | `+0.0412 [+0.0348, +0.0475]` | Yes | `-0.0003 [-0.0068, +0.0058]` | No |
-| `openclip_vitb16` | `l=11` | 0.261 | **`+0.0653 [+0.0562, +0.0747]`** (`1.75×` DINO) | Yes | `-0.0006 [-0.0099, +0.0084]` | No |
+| `openclip_vitb16` | `l=11` | 0.261 | **`+0.0653 [+0.0562, +0.0747]`** (`1.6×–1.8×` B-scale SSL) | Yes | `-0.0006 [-0.0099, +0.0084]` | No |
 
 - **Area-tercile stratification (§4.4) passes:** `deit3_small_patch16_224 > dino_vits16`, `openclip_vitb16 l=8 > dino_vits16`, and `dinov2_vitb14_reg < dinov2_vitb14` hold inside all three object-area terciles.
-- **Honest CI qualification:** The **Background Main Effect** cleanly separates supervision regimes with non-overlapping CIs at both matched layers (`3.1×–7.3×` at `l=8`; `1.75×–2.7×` at `l=11`), whereas for the **Balanced Interaction**, only `deit3_small_patch16_224` at `l=8` excludes zero (`-0.0141 [-0.0262, -0.0025]`); `deit3 l=11` and `openclip l=8` have wide CIs crossing zero and must not be overclaimed.
+- **Size-matched SSL range summary:**
+  - At **`l=8`**: `deit3_small_patch16_224` (`S/16`, `+0.0778`) is **`1.9×` `ibot_vits16` (`+0.0410`)** and **`3.1×` `dino_vits16` (`+0.0254`)**; `openclip_vitb16` (`B/16`, `+0.1854`) is **`2.7×` `dinov2_vitb14` (`+0.0685`)**, **`3.3×` `dinov2_vitb14_reg` (`+0.0568`)**, and **`3.9×` `mocov3_vitb16` (`+0.0473`)** — all with non-overlapping 95% CIs.
+  - At **`l=11`**: `deit3_small_patch16_224` (`S/16`, `+0.1015`) is **`2.7×` `dino_vits16` (`+0.0374`)** and **`3.3×` `ibot_vits16` (`+0.0303`)**; `openclip_vitb16` (`B/16`, `+0.0653`) is **`1.6×` `dinov2_vitb14_reg` (`+0.0412`)**, **`1.7×` `mocov3_vitb16` (`+0.0394`)**, and **`1.8×` `dinov2_vitb14` (`+0.0360`)** — all with non-overlapping 95% CIs.
+- **Honest CI qualification on Balanced Interaction:** Only `deit3_small_patch16_224` at `l=8` (`-0.0141 [-0.0262, -0.0025]`) and degenerate `mae_vitb16` at `l=11` exclude zero; `deit3 l=11` (`-0.0235 [-0.0815, +0.0131]`) and `openclip l=8` (`-0.0188 [-0.0717, +0.0277]`) cross zero and are not claimed as significant interactions.
 
 ---
 
@@ -185,7 +188,14 @@ Measured on a single Kaggle Tesla T4 GPU (`16 GB`):
 | `pilot_ralr_cub` | CUB-200-2011 | 500 | 967.2 | 68.1 | 47.6 | `4e42dc56` |
 | `pilot_ralr_in1k` | ImageNet-1K-val | 1,000 | 1,973.9 | 59.1 | 42.3 | `4e42dc56` |
 
-- **Revised Compute Estimate (Minimum Viable Paper — 12 models, Sets A+B, single T4):** **`7.82 T4 GPU-hours`** total (`M1/M2 10k`: `2.53h`; `M3 Waterbirds`: `0.31h`; `M4 10k`: `1.14h`; `I1/I2/I5`: `2.43h`; `RALR 3 benchmarks`: `1.41h`), comfortably within a single Kaggle weekly GPU quota.
+- **Revised Compute Estimate & Coverage Statement (vs. Guide's `~90 GPU-hours` MVP budget):**
+  - **Covered in the `7.82 T4 GPU-hours` figure:** 12 ViT-S/B checkpoints (Sets A+B only), `14×14` primary matched grid (`224px /16`, `196px /14`), 10k-image M1/M2 (`2.53h`), full `5,794`-image Waterbirds M3 (`0.31h`), 10k-image M4 `C0/C1` (`1.14h`), 1k-image cached-`z_start` I1/I2/I5 (`2.43h`), and 3×1k-image RALR (`1.41h`).
+  - **Explicitly OMITTED from `7.82h` (accounting for the gap to the Guide's `~90 GPU-hours` MVP / `~190 GPU-hours` full budget):**
+    1. Full-scale localization sweeps (`50,000`-image ImageNet-1K val WSOL and `30,000`-image OpenImages30k; scaling RALR from `1k` to `50k + 30k + 5.8k` adds ~`35–45 T4-h`),
+    2. Larger backbones in Sets C–F (`ViT-L/14`, `ViT-H/14`, `ViT-g`, 7B Web-SSL, DINOv3-L/7B),
+    3. Secondary high-resolution (`448/518px`) extraction protocol (§1.5),
+    4. Intervention **I3** (test-time register sweeps) + M4 Condition `C2`,
+    5. Intervention **I4** (linear stitching), `LOST`/`TokenCut` baselines on full splits, disk-cache extraction/verification, VOC12/COCO20k, medical extension, and debugging/rerun contingency.
 
 ---
 
@@ -195,15 +205,14 @@ Measured on a single Kaggle Tesla T4 GPU (`16 GB`):
   - `deit3_small_patch16_224`: IN-1K **top-1 accuracy (own logits) = `82.10%`**, IN-1K `kNN@20 = 76.20%`.
   - `mocov3_vitb16`: IN-1K `kNN@20 = 48.90%` (vs `dino_vits16` `53.50%` and `dinov2_vitb14_reg` `68.90%`).
   - *Conclusion:* Post-norm `[CLS]` features and classifier logits are verified healthy; lower CUB-200 200-way kNN for `deit3_small_patch16_224` (`0.400`) and `mocov3_vitb16` (`0.428`) reflects fine-grained OOD transfer rather than a feature-extraction bug.
-- **Exploratory CUB-500 I1/I2 Summary (explicitly non-confirmatory; used to freeze protocol in [osf_preregistration.md](osf_preregistration.md)):**
-  - **I1:** Under in-cone surrogates (`S2, S3, S4`, `L_int = 1..4`), all 8 models remain within `±0.024` `Δbox-AUC` and `|ΔkNN| ≤ 0.029` (DeiT-III map actually improves `+0.021–0.024`), whereas off-manifold `S1` collapses every model (`ΔAUC = -0.283` to `-0.440`, `ΔkNN` down `-0.34` to `-0.71`, DeiT-III `KL = 1.70 nats`). Thus I1 does **not** separate objectives (`<2 pt` vs `>5 pt`) as originally hypothesized in H2.
-  - **I2:** Map quality at `l=10` (unablated `l=11` map) survives token knockout within `±0.006` for 6/8 models while `[CLS]` function moves substantially (`l=11` FG `1−cos`: `0.259` `dinov2_reg`, `0.179` `dinov2`, `0.121` `deit3`, `0.078` `openclip`). On `dinov2_vitb14_reg`, knocking out the 4 `REG` tokens shifts `[CLS]` (`net 1−cos = +0.054`) while leaving the map unchanged (`ΔAUC = -0.0008`).
+- **Exploratory CUB-500 I1/I2 Summary (explicitly non-confirmatory; ImageNet-1K I1/I2 & I5 held separately for review before inclusion):**
+  - **I1:** Under in-cone surrogates (`S2, S3, S4`, `L_int = 1..4`), all 8 models remain within `±0.024` `Δbox-AUC` and `|ΔkNN| ≤ 0.029` (`deit3_small_patch16_224` improves `+0.021–0.024`), whereas off-manifold `S1` collapses every model (`ΔAUC = -0.283` to `-0.440`, `ΔkNN` down `-0.34` to `-0.71`, DeiT-III `KL = 1.70 nats`). Thus H2's query-swap leg is **not supported; DeiT-III improves**.
+  - **I2:** Map quality at `l=10` (unablated `l=11` map) survives token knockout within `±0.006` for 6/8 models while `[CLS]` function moves substantially (`l=11` FG `1−cos`: `0.259` `dinov2_vitb14_reg`, `0.179` `dinov2_vitb14`, `0.121` `deit3_small_patch16_224`, `0.078` `openclip_vitb16`). On `dinov2_vitb14_reg`, knocking out the 4 `REG` tokens shifts `[CLS]` (`net 1−cos = +0.054`) while leaving the map unchanged (`ΔAUC = -0.0008`).
 
 ---
 
 ## 9. Immediate Next Steps (Toward 4 Dec First Draft)
 
-1. Freeze [osf_preregistration.md](osf_preregistration.md) on OSF with commit SHA `9cf7490` (or the commit adding `docs/`).
-2. Run confirmatory **ImageNet-1K I1/I2** (frozen protocol with equal-count `FG vs BG_eq_FG` contrast) + **Intervention I5** (`[CLS]` randomization).
-3. Expand Pilot-8 → **12-model Sets A+B** + `LOST` / `TokenCut` RALR baselines + descriptive §10.3 confound regression.
-4. Draft MS thesis chapters for **4 Dec** internal deadline (cutting Set E, USAEs, VOC12/COCO20k, medical, and I4 per §13.1).
+1. Export the remaining 2 split ID lists (`cub_gallery_train_5994.txt` and `waterbirds_m4_2000_seed0.txt`), commit SHAs, and **post [osf_preregistration.md](osf_preregistration.md) to OSF tonight**.
+2. Share the standalone ImageNet-1K I1/I2 and I5 outputs + scripts for supervisor/reviewer sign-off before folding them into this report.
+3. Run unseen confirmatory items (**12-model Sets A+B expansion**, **I3 / C2**, **`LOST` / `TokenCut` RALR baselines**, and **`stats/`** Holm + mixed-effects + descriptive confound regression), applying the 16 Dec fallback rule if the 12-model run cannot finish in time.
