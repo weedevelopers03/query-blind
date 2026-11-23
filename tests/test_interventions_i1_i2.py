@@ -16,11 +16,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from interventions import forward_ops as fops
 from interventions import i1_i2 as I12
+from scripts import check_in1k_feature_sanity as sanity_chk
 from scripts import run_pilot_interventions_i1_i2 as runner_i12
-from scripts.run_pilot_m1_m2 import load_pilot_model
+from scripts.run_pilot_m1_m2 import PILOT8_SPECS, load_pilot_model
 
 
-@pytest.mark.parametrize("model_id", ["dino_vits16", "deit3_small_patch16_224", "dinov2_vitb14_reg", "openclip_vitb16"])
+@pytest.mark.parametrize("model_id", list(PILOT8_SPECS.keys()))
 def test_clean_block_forward_matches_native_model_exact(model_id: str, tmp_path: Path):
     """Critical correctness test: zero-edit intervened forward must reproduce native model output to <1e-4."""
     torch.manual_seed(0)
@@ -112,15 +113,25 @@ def test_matched_random_mask_exact_count_and_no_cls_or_reg():
     assert not r0[:, :5].any(), "Random patch mask must never select [CLS] or register tokens!"
     assert not np.array_equal(r0, r1)
 
-    # BG matched random control restricted to non-FG pool must never select any FG token
-    non_fg = np.zeros((10, 201), dtype=bool)
-    non_fg[:, layout["patch_idx"]] = ~fg
-    r_bg = I12.make_matched_random_patch_mask(masks["BG"], layout, seed=0, eligible_mask=non_fg)
-    assert (r_bg.sum(axis=1) == 156).all()
-    assert not r_bg[:, :5].any()
-    fg_tok = np.zeros((10, 201), dtype=bool)
-    fg_tok[:, layout["patch_idx"]] = fg
-    assert not (r_bg & fg_tok).any(), "BG random control leaked into FG tokens!"
+    # Equal-count BG_eq_FG control: exact size m_FG, strictly inside BG = M_fg^c \ OUT (zero FG, OUT, CLS, REG)
+    bg_eq0, ex_ok0 = I12.make_bg_equal_count_fg_mask(masks["FG"], masks["BG"], layout, seed=0)
+    bg_eq1, _ = I12.make_bg_equal_count_fg_mask(masks["FG"], masks["BG"], layout, seed=1)
+    assert ex_ok0.all()
+    assert (bg_eq0.sum(axis=1) == 37).all()
+    assert not (bg_eq0 & masks["FG"]).any(), "BG_eq_FG leaked into FG!"
+    assert not (bg_eq0 & masks["OUT"]).any(), "BG_eq_FG leaked into OUT!"
+    assert not bg_eq0[:, :5].any(), "BG_eq_FG leaked into [CLS] or REG!"
+    assert (bg_eq0 & masks["BG"]).sum(axis=1).tolist() == [37] * 10
+    assert not np.array_equal(bg_eq0, bg_eq1)
+
+    # Bootstrapped per-token FG:BG ratio recovers exact ratio (10x here)
+    fg_shift = np.full(50, 0.20)
+    fg_cnt = np.full(50, 20.0)   # 0.01 per token
+    bg_shift = np.full(50, 0.16)
+    bg_cnt = np.full(50, 160.0)  # 0.001 per token -> ratio = 10.0
+    rat = I12.bootstrap_fg_bg_per_token_ratio(fg_shift, fg_cnt, bg_shift, bg_cnt, seed=0)
+    assert np.isclose(rat["ratio"], 10.0)
+    assert np.isclose(rat["ci95_low"], 10.0) and np.isclose(rat["ci95_high"], 10.0)
 
 
 def test_unablated_patch_auc_ignores_ablated_tokens_and_returns_nan_when_empty():
@@ -216,15 +227,28 @@ def test_i1_i2_cli_end_to_end_smoke(tmp_path: Path):
     meta = json.loads((out_dir / "meta.json").read_text())
     assert meta["git_sha"] is not None and len(meta["git_sha"]) >= 7
     rep = json.loads((out_dir / "i1_i2_report.json").read_text())
-    # Verify full gallery, S1-S4 rows, non-FG BG control, l=10 & l=11, and MAE patch-mean
+    # Verify frozen protocol: full gallery, S1-S4 rows, raw BG, equal-count FG vs BG_eq_FG, l=10-only AUC, MAE flag
     assert rep["deit3_small_patch16_224"]["knn_gallery_mode"] == "full_train"
     assert rep["deit3_small_patch16_224"]["has_logits"] is True
     assert "kl_mean" in rep["deit3_small_patch16_224"]["i1_results"][0]
     for s_name in ("| S1 |", "| S2 |", "| S3 |", "| S4 |"):
         assert s_name in md_text, f"Missing surrogate {s_name} in summary_i1_i2.md"
     bg_rows = [r for r in rep["deit3_small_patch16_224"]["i2_results"] if r["group"] == "BG"]
-    assert bg_rows and all(r["control_pool"] == "non_fg_patches" for r in bg_rows)
+    assert bg_rows and all(r["control_pool"] == "raw_only" for r in bg_rows)
     assert {r["layer"] for r in bg_rows} == {10, 11}
+    # Map Δbox-AUC scored strictly at l=10 (None at l=11)
+    assert all(r["delta_auc_group"] is not None for r in rep["deit3_small_patch16_224"]["i2_results"] if r["layer"] == 10)
+    assert all(r["delta_auc_group"] is None for r in rep["deit3_small_patch16_224"]["i2_results"] if r["layer"] == 11)
+    assert len(rep["deit3_small_patch16_224"]["i2_fg_bg_contrasts"]) == 4  # (l=10,11) x (zero,mean_v)
     assert any(r["group"] == "REG" for r in rep["dinov2_vitb14_reg"]["i2_results"])
-    assert rep["mae_vitb16"]["clean_patch_mean_knn"] is not None
-    assert "MAE Patch-Mean Read-Out" in md_text
+    assert rep["mae_vitb16"]["exclude_from_function_tests"] is True
+    assert "## 1A." in md_text and "## 1B." in md_text and "## 2A." in md_text and "## 2B." in md_text
+
+
+def test_random_eyecheck_sampler_is_not_first_20(tmp_path: Path):
+    ids = [f"img_{i:04d}" for i in range(500)]
+    out_p = tmp_path / "eye20.txt"
+    chosen = sanity_chk.export_random_eyecheck_ids(ids, out_p, n_eye=20, seed=0)
+    assert len(chosen) == 20 and len(set(chosen)) == 20
+    assert chosen != ids[:20], "Eye-check sample must be random, not the first 20!"
+    assert out_p.read_text().splitlines() == chosen

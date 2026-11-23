@@ -131,6 +131,78 @@ def make_matched_random_patch_mask(
     return rand_mask
 
 
+def make_bg_equal_count_fg_mask(
+    fg_mask: np.ndarray,   # (I, T) bool: FG = M_fg \ OUT
+    bg_mask: np.ndarray,   # (I, T) bool: BG = M_fg^c \ OUT
+    layout: dict,
+    seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample a random subset of BG (= M_fg^c \\ OUT) of exact size m_FG = |FG_i| per image.
+
+    Eliminates both OUT leakage and token-count saturation bias when contrasting FG vs BG at equal count.
+    Returns:
+      bg_eq_mask:     (I, T) bool, guaranteed disjoint from FG, OUT, [CLS], and REG.
+      exact_count_ok: (I,) bool, True where |BG_i| >= |FG_i| > 0 (so counts match exactly).
+    """
+    fg = np.asarray(fg_mask, dtype=bool)
+    bg = np.asarray(bg_mask, dtype=bool)
+    I, T = fg.shape
+    patch_idx = np.asarray(layout["patch_idx"], dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    out_mask = np.zeros((I, T), dtype=bool)
+    exact_ok = np.zeros(I, dtype=bool)
+    fg_counts = fg.sum(axis=1)
+
+    for i in range(I):
+        m = int(fg_counts[i])
+        bg_pool = patch_idx[bg[i, patch_idx]]
+        if m <= 0 or bg_pool.size == 0:
+            continue
+        if bg_pool.size >= m:
+            chosen = rng.choice(bg_pool, size=m, replace=False)
+            out_mask[i, chosen] = True
+            exact_ok[i] = True
+        else:
+            out_mask[i, bg_pool] = True
+            exact_ok[i] = False
+    return out_mask, exact_ok
+
+
+def bootstrap_fg_bg_per_token_ratio(
+    fg_shift: np.ndarray,
+    fg_counts: np.ndarray,
+    bg_shift: np.ndarray,
+    bg_counts: np.ndarray,
+    *,
+    n_boot: int = 2000,
+    seed: int = 0,
+) -> dict[str, float | int]:
+    """Image-level bootstrap 95% CI for per-token FG:BG influence ratio: mean(fg_i/m_fg_i) / mean(bg_i/m_bg_i)."""
+    fs = np.asarray(fg_shift, dtype=np.float64)
+    fc = np.asarray(fg_counts, dtype=np.float64)
+    bs = np.asarray(bg_shift, dtype=np.float64)
+    bc = np.asarray(bg_counts, dtype=np.float64)
+    ok = (fc > 0) & (bc > 0) & np.isfinite(fs) & np.isfinite(bs)
+    n_ok = int(ok.sum())
+    if n_ok < 2:
+        return {"ratio": float("nan"), "ci95_low": float("nan"), "ci95_high": float("nan"), "n_valid": n_ok}
+
+    rf = fs[ok] / fc[ok]
+    rb = bs[ok] / bc[ok]
+    denom = float(rb.mean())
+    point = float(rf.mean() / denom) if abs(denom) > 1e-12 else float("nan")
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n_ok, size=(n_boot, n_ok))
+    num_b = rf[idx].mean(axis=1)
+    den_b = rb[idx].mean(axis=1)
+    valid_b = np.abs(den_b) > 1e-12
+    if not valid_b.any():
+        return {"ratio": point, "ci95_low": float("nan"), "ci95_high": float("nan"), "n_valid": n_ok}
+    ratios_b = num_b[valid_b] / den_b[valid_b]
+    lo, hi = np.percentile(ratios_b, [2.5, 97.5])
+    return {"ratio": point, "ci95_low": float(lo), "ci95_high": float(hi), "n_valid": n_ok}
+
+
 # --------------------------------------------------------------------------- Functional & Map Read-Outs
 def cosine_similarity_batch(z_clean: np.ndarray, z_int: np.ndarray) -> np.ndarray:
     """Per-image cosine similarity between clean and intervened global embeddings (I,)."""
