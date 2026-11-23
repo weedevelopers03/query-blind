@@ -112,17 +112,84 @@ def test_matched_random_mask_exact_count_and_no_cls_or_reg():
     assert not r0[:, :5].any(), "Random patch mask must never select [CLS] or register tokens!"
     assert not np.array_equal(r0, r1)
 
+    # BG matched random control restricted to non-FG pool must never select any FG token
+    non_fg = np.zeros((10, 201), dtype=bool)
+    non_fg[:, layout["patch_idx"]] = ~fg
+    r_bg = I12.make_matched_random_patch_mask(masks["BG"], layout, seed=0, eligible_mask=non_fg)
+    assert (r_bg.sum(axis=1) == 156).all()
+    assert not r_bg[:, :5].any()
+    fg_tok = np.zeros((10, 201), dtype=bool)
+    fg_tok[:, layout["patch_idx"]] = fg
+    assert not (r_bg & fg_tok).any(), "BG random control leaked into FG tokens!"
+
+
+def test_unablated_patch_auc_ignores_ablated_tokens_and_returns_nan_when_empty():
+    fg = np.zeros((2, 10), dtype=bool)
+    fg[:, :4] = True
+    scores = np.array([
+        [0.9, 0.8, 0.7, 0.6, 0.1, 0.2, 0.3, 0.4, 0.5, 0.0],
+        [0.9, 0.8, 0.7, 0.6, 0.1, 0.2, 0.3, 0.4, 0.5, 0.0],
+    ], dtype=np.float32)
+    abl = np.zeros((2, 10), dtype=bool)
+    abl[0, 0] = True     # ablate 1 FG patch in img 0
+    abl[1, :4] = True    # ablate ALL FG patches in img 1 -> must be NaN
+
+    # Perturbing ablated token values arbitrarily must NOT change unablated AUC
+    scores_mod = scores.copy()
+    scores_mod[0, 0] = -999.0
+    auc1 = I12.eval_patch_box_auc_unablated(scores, fg, ablated_patch_mask=abl)
+    auc2 = I12.eval_patch_box_auc_unablated(scores_mod, fg, ablated_patch_mask=abl)
+    assert np.isclose(auc1[0], 1.0)
+    assert np.isclose(auc1[0], auc2[0])
+    assert np.isnan(auc1[1]), "AUC must be NaN when 0 non-ablated FG patches remain"
+
+
+def test_knn_full_gallery_external_reference():
+    rng = np.random.default_rng(7)
+    # 2 well-separated clusters in R^8: 40 gallery refs, 6 queries (n_q != n_r)
+    gal = np.vstack([rng.normal(loc=2.0, scale=0.2, size=(20, 8)), rng.normal(loc=-2.0, scale=0.2, size=(20, 8))]).astype(np.float32)
+    gal_y = np.array([0] * 20 + [1] * 20, dtype=np.int64)
+    q = np.vstack([rng.normal(loc=2.0, scale=0.2, size=(3, 8)), rng.normal(loc=-2.0, scale=0.2, size=(3, 8))]).astype(np.float32)
+    q_y = np.array([0, 0, 0, 1, 1, 1], dtype=np.int64)
+    acc, hits = I12.knn_accuracy_cosine(q, q_y, feats_ref=gal, labels_ref=gal_y, exclude_self=False, k=5)
+    assert acc == 1.0 and hits.shape == (6,)
+
+
+def test_mean_v_at_penultimate_layer_propagates_to_l11_attention(tmp_path: Path):
+    """At l=11, mean_v cannot change l=11 attention (structural 0); at l=10, it propagates to l=11 attention."""
+    torch.manual_seed(3)
+    dev = torch.device("cpu")
+    adapter, model, _, _, ts = load_pilot_model("dino_vits16", dev, tmp_path, smoke_random=True)
+    x = torch.randn(2, 3, ts, ts)
+    z8, layout = fops.forward_to_block_input(adapter, model, x, target_block=8)
+    clean = fops.forward_from_block_with_interventions(adapter, model, z8, layout, start_block=8, capture_clean_stats=True)
+    v_means = {l: (clean["v_sum_by_layer"][l] / float(clean["v_count_by_layer"][l])).float() for l in clean["v_sum_by_layer"]}
+
+    ko = torch.zeros((2, z8.shape[1]), dtype=torch.bool)
+    ko[:, layout["patch_idx"][:40]] = True
+    res_l11 = fops.forward_from_block_with_interventions(
+        adapter, model, z8, layout, start_block=8, ko_masks={11: ko}, ko_mode="mean_v", v_means=v_means,
+    )
+    res_l10 = fops.forward_from_block_with_interventions(
+        adapter, model, z8, layout, start_block=8, ko_masks={10: ko}, ko_mode="mean_v", v_means=v_means,
+    )
+    diff_l11 = float((res_l11["last_weighted_map"] - clean["last_weighted_map"]).abs().max().item())
+    diff_l10 = float((res_l10["last_weighted_map"] - clean["last_weighted_map"]).abs().max().item())
+    assert diff_l11 < 1e-7, f"Expected structural 0 map diff for mean_v at l=11, got {diff_l11}"
+    assert diff_l10 > 1e-6, f"Expected non-zero downstream l=11 map diff for mean_v at l=10, got {diff_l10}"
+
 
 def test_i1_i2_cli_end_to_end_smoke(tmp_path: Path):
     cub = tmp_path / "CUB_200_2011"
     (cub / "images" / "001.Bird").mkdir(parents=True)
     rng = np.random.default_rng(0)
     img_lines, split_lines, box_lines, cls_lines = [], [], [], []
-    for i in range(1, 9):
+    # 6 test images (is_train=0) + 6 train gallery images (is_train=1)
+    for i in range(1, 13):
         rel = f"001.Bird/img_{i:02d}.jpg"
         Image.fromarray(rng.integers(0, 255, size=(80, 100, 3), dtype=np.uint8)).save(cub / "images" / rel)
         img_lines.append(f"{i} {rel}")
-        split_lines.append(f"{i} 0")
+        split_lines.append(f"{i} {0 if i <= 6 else 1}")
         box_lines.append(f"{i} 10 10 50 50")
         cls_lines.append(f"{i} {(i % 2) + 1}")
     (cub / "images.txt").write_text("\n".join(img_lines) + "\n")
@@ -135,7 +202,7 @@ def test_i1_i2_cli_end_to_end_smoke(tmp_path: Path):
         "--cub_dir", str(cub),
         "--split_file", str(tmp_path / "split.txt"),
         "--out_dir", str(out_dir),
-        "--models", "deit3_small_patch16_224,dinov2_vitb14_reg",
+        "--models", "deit3_small_patch16_224,mae_vitb16,dinov2_vitb14_reg",
         "--n_images", "6",
         "--batch_size", "3",
         "--l_int_sweep", "1,2",
@@ -143,12 +210,21 @@ def test_i1_i2_cli_end_to_end_smoke(tmp_path: Path):
         "--knn_k", "3",
         "--smoke_random",
     ])
-    assert (out_dir / "summary_i1_i2.md").exists()
+    md_text = (out_dir / "summary_i1_i2.md").read_text()
     assert (out_dir / "i1_i2_report.json").exists()
     assert (out_dir / "meta.json").exists()
     meta = json.loads((out_dir / "meta.json").read_text())
     assert meta["git_sha"] is not None and len(meta["git_sha"]) >= 7
     rep = json.loads((out_dir / "i1_i2_report.json").read_text())
+    # Verify full gallery, S1-S4 rows, non-FG BG control, l=10 & l=11, and MAE patch-mean
+    assert rep["deit3_small_patch16_224"]["knn_gallery_mode"] == "full_train"
     assert rep["deit3_small_patch16_224"]["has_logits"] is True
     assert "kl_mean" in rep["deit3_small_patch16_224"]["i1_results"][0]
+    for s_name in ("| S1 |", "| S2 |", "| S3 |", "| S4 |"):
+        assert s_name in md_text, f"Missing surrogate {s_name} in summary_i1_i2.md"
+    bg_rows = [r for r in rep["deit3_small_patch16_224"]["i2_results"] if r["group"] == "BG"]
+    assert bg_rows and all(r["control_pool"] == "non_fg_patches" for r in bg_rows)
+    assert {r["layer"] for r in bg_rows} == {10, 11}
     assert any(r["group"] == "REG" for r in rep["dinov2_vitb14_reg"]["i2_results"])
+    assert rep["mae_vitb16"]["clean_patch_mean_knn"] is not None
+    assert "MAE Patch-Mean Read-Out" in md_text

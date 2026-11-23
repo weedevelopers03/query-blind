@@ -81,6 +81,33 @@ def read_global_embedding_and_logits(
     raise NotImplementedError(f"read_global_embedding_and_logits not implemented for family={adapter.family!r}")
 
 
+@torch.no_grad()
+def read_patch_mean_embedding(
+    adapter, model, z_final: torch.Tensor, layout: dict
+) -> torch.Tensor:
+    """Mean-pooled patch representation after final norm (standard read-out for MAE / patch-pooled ViTs)."""
+    patch_idx = layout["patch_idx"]
+    if adapter.family == "timm_vit":
+        # Note: timm MAE uses fc_norm on the mean-pooled patch tokens when global_pool='avg';
+        # if fc_norm is present and not Identity, apply fc_norm(patch_mean), else norm(z)[:, patch_idx].mean(1).
+        fc_norm = getattr(model, "fc_norm", None)
+        if fc_norm is not None and not isinstance(fc_norm, torch.nn.Identity):
+            pooled = fc_norm(z_final[:, patch_idx, :].mean(dim=1))
+        else:
+            x_norm = model.norm(z_final)
+            pooled = x_norm[:, patch_idx, :].mean(dim=1)
+        return pooled.float()
+
+    if adapter.family == "open_clip_vit":
+        vt = adapter._visual(model)
+        pooled = vt.ln_post(z_final[:, patch_idx, :]).mean(dim=1)
+        if getattr(vt, "proj", None) is not None:
+            pooled = pooled @ vt.proj
+        return pooled.float()
+
+    raise NotImplementedError(f"read_patch_mean_embedding not implemented for family={adapter.family!r}")
+
+
 # --------------------------------------------------------------------------- Intervened single-block attention
 def _apply_cls_only_attention(
     q: torch.Tensor,         # (B, H, T, d_h)
@@ -296,9 +323,11 @@ def forward_from_block_with_interventions(
         raise NotImplementedError(f"forward_from_block_with_interventions not implemented for family={adapter.family!r}")
 
     emb, logits = read_global_embedding_and_logits(adapter, model, z, layout)
+    emb_patch_mean = read_patch_mean_embedding(adapter, model, z, layout)
     out = {
         "z_final": z,
         "emb": emb,
+        "emb_patch_mean": emb_patch_mean,
         "logits": logits,
         "last_attn_patch": last_attn_patch,
         "last_head_weights": last_head_weights,

@@ -101,15 +101,18 @@ def make_matched_random_patch_mask(
     group_mask: np.ndarray,  # (I, T) bool
     layout: dict,
     seed: int = 0,
+    eligible_mask: np.ndarray | None = None,  # Optional (I, T) bool restricting pool (e.g. non-FG for BG)
 ) -> np.ndarray:
-    """Guide §6: for each image i, randomly select the exact same count m_i = |group_i| from patch_idx.
+    """Guide §6: for each image i, randomly select the exact same count m_i = |group_i| from eligible patch_idx.
 
-    Never selects [CLS] or register tokens.
+    Never selects [CLS] or register tokens. When `eligible_mask` is supplied (e.g. non-FG patches for BG
+    knockout), samples exclusively from `patch_idx ∩ eligible_mask[i]`.
     """
     gm = np.asarray(group_mask, dtype=bool)
     I, T = gm.shape
     patch_idx = np.asarray(layout["patch_idx"], dtype=np.int64)
     N = patch_idx.size
+    elig = np.asarray(eligible_mask, dtype=bool) if eligible_mask is not None else None
     rng = np.random.default_rng(seed)
     rand_mask = np.zeros((I, T), dtype=bool)
     counts = gm.sum(axis=1)
@@ -117,10 +120,13 @@ def make_matched_random_patch_mask(
         m = int(counts[i])
         if m <= 0:
             continue
-        if m >= N:
-            rand_mask[i, patch_idx] = True
+        pool = patch_idx[elig[i, patch_idx]] if elig is not None else patch_idx
+        if pool.size == 0:
+            continue
+        if m >= pool.size:
+            rand_mask[i, pool] = True
         else:
-            chosen = rng.choice(patch_idx, size=m, replace=False)
+            chosen = rng.choice(pool, size=m, replace=False)
             rand_mask[i, chosen] = True
     return rand_mask
 
@@ -156,20 +162,28 @@ def knn_accuracy_cosine(
     labels: np.ndarray,
     *,
     feats_ref: np.ndarray | None = None,
+    labels_ref: np.ndarray | None = None,
+    exclude_self: bool | None = None,
     k: int = 20,
     device: torch.device | str | None = None,
 ) -> tuple[float, np.ndarray]:
-    """Leave-one-out cosine k-NN classification accuracy (k=20, Guide §6).
+    """Cosine-weighted k-NN classification accuracy (k=20, Guide §6).
 
-    When feats_ref is provided (e.g. clean embeddings as reference bank, intervened embeddings as queries),
-    evaluates how well intervened embeddings still retrieve same-class clean neighbors (excluding self i).
+    Supports two modes:
+      1. External gallery (`feats_ref` and `labels_ref` provided, `exclude_self=False` by default):
+         evaluates each query against the full training gallery (e.g. CUB-200-2011 5,994-image train split).
+      2. Leave-one-out (`labels_ref is None`, `exclude_self=True` by default):
+         evaluates each query against `feats_ref` (or itself) excluding self-index `i`.
     """
     dev = torch.device(device) if device is not None else torch.device("cpu")
-    y = np.asarray(labels, dtype=np.int64)
-    n = y.shape[0]
-    if n < 2:
-        return float("nan"), np.full(n, np.nan)
-    k_eff = min(k, n - 1)
+    y_q = np.asarray(labels, dtype=np.int64)
+    y_r = np.asarray(labels_ref, dtype=np.int64) if labels_ref is not None else y_q
+    n_q = y_q.shape[0]
+    n_r = y_r.shape[0]
+    excl = (labels_ref is None) if exclude_self is None else bool(exclude_self)
+    if n_q == 0 or n_r == 0 or (excl and n_r < 2):
+        return float("nan"), np.full(n_q, np.nan)
+    k_eff = min(k, n_r - 1 if excl else n_r)
 
     Q = torch.as_tensor(feats_query, dtype=torch.float32, device=dev)
     Q = Q / torch.clamp(torch.linalg.norm(Q, dim=-1, keepdim=True), min=1e-12)
@@ -177,21 +191,69 @@ def knn_accuracy_cosine(
     if feats_ref is not None:
         R = R / torch.clamp(torch.linalg.norm(R, dim=-1, keepdim=True), min=1e-12)
 
-    sims = Q @ R.T  # (n, n)
-    sims.fill_diagonal_(-float("inf"))
+    sims = Q @ R.T  # (n_q, n_r)
+    if excl and n_q == n_r:
+        sims.fill_diagonal_(-float("inf"))
     top_vals, top_idx = torch.topk(sims, k=k_eff, dim=-1, largest=True, sorted=False)
     top_idx_np = top_idx.cpu().numpy()
     top_w = torch.softmax(top_vals / 0.07, dim=-1).cpu().numpy()  # standard DINO cosine-weighted kNN
 
-    correct = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        nbr_labels = y[top_idx_np[i]]
-        # Weighted majority vote
+    correct = np.zeros(n_q, dtype=np.float64)
+    for i in range(n_q):
+        nbr_labels = y_r[top_idx_np[i]]
         uniq, inv = np.unique(nbr_labels, return_inverse=True)
         scores = np.bincount(inv, weights=top_w[i])
         pred = uniq[int(np.argmax(scores))]
-        correct[i] = 1.0 if pred == y[i] else 0.0
+        correct[i] = 1.0 if pred == y_q[i] else 0.0
     return float(correct.mean()), correct
+
+
+def _roc_auc_1d_exact(scores: np.ndarray, labels_bool: np.ndarray) -> float:
+    """Tie-aware exact Mann-Whitney ROC-AUC for 1D scores and boolean labels."""
+    y = np.asarray(labels_bool, dtype=bool)
+    n_pos = int(y.sum())
+    n_neg = int(y.size - n_pos)
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    s = np.asarray(scores, dtype=np.float64)
+    order = np.argsort(s, kind="mergesort")
+    s_sorted = s[order]
+    y_sorted = y[order]
+    # Average ranks for ties (1-based)
+    n = s_sorted.size
+    ranks = np.empty(n, dtype=np.float64)
+    i = 0
+    while i < n:
+        j = i + 1
+        while j < n and s_sorted[j] == s_sorted[i]:
+            j += 1
+        avg_r = 0.5 * ((i + 1) + j)
+        ranks[i:j] = avg_r
+        i = j
+    sum_pos_ranks = float(ranks[y_sorted].sum())
+    return (sum_pos_ranks - 0.5 * n_pos * (n_pos + 1)) / float(n_pos * n_neg)
+
+
+def eval_patch_box_auc_unablated(
+    patch_maps: np.ndarray,           # (I, N) float32
+    fg_patch_masks: np.ndarray,       # (I, N) bool
+    ablated_patch_mask: np.ndarray | None = None,  # (I, N) bool True = ablated/excluded
+) -> np.ndarray:
+    """Exact ROC-AUC scored strictly over NON-ABLATED patch tokens (prevents mechanical zero-ablation artifacts).
+
+    Returns (I,) float64 array with NaN for images where non-ablated tokens have 0 FG or 0 BG patches.
+    """
+    pm = np.asarray(patch_maps, dtype=np.float64)
+    fg = np.asarray(fg_patch_masks, dtype=bool)
+    I, N = pm.shape
+    keep = np.ones((I, N), dtype=bool) if ablated_patch_mask is None else ~np.asarray(ablated_patch_mask, dtype=bool)
+    out = np.full(I, np.nan, dtype=np.float64)
+    for i in range(I):
+        k_i = keep[i]
+        if not k_i.any():
+            continue
+        out[i] = _roc_auc_1d_exact(pm[i, k_i], fg[i, k_i])
+    return out
 
 
 @torch.no_grad()
