@@ -181,6 +181,33 @@ def test_h3_m4_and_h5_exact_sign_test_rules():
     assert h3["rand_gap_ok"] is True
     assert h3["p_raw"] < 0.01
 
+    # Multi-cell H3 aggregation: 1 null cell (l11:R2) + 7 strong cells -> 7/8 triggered, Bonferroni p = 8 * min_p
+    null_cell = C.test_h3_m4_artifact_sensitivity(
+        rng.normal(+0.01, 0.02, size=50),
+        rng.normal(-0.01, 0.02, size=50),
+        tau_c0_c1=0.96,
+        n_boot=2000,
+        seed=0,
+        label="l11:R2:cka",
+    )
+    strong_cells = [
+        C.test_h3_m4_artifact_sensitivity(
+            rng.normal(-0.50 - 0.05 * k, 0.03, size=50),
+            rng.normal(-0.50 - 0.05 * k, 0.03, size=50),
+            tau_c0_c1=0.20,
+            tau_c0_c1_rand=0.99 if k % 2 == 1 else None,
+            n_boot=2000,
+            seed=k + 1,
+            label=f"l{8 + k // 2}:{'R3' if k % 2 == 1 else 'R2'}:cka",
+        )
+        for k in range(7)
+    ]
+    mc = C.test_h3_m4_multicell([null_cell] + strong_cells)
+    assert mc["n_cells_total"] == 8 and mc["n_cells_triggered"] == 7
+    assert abs(mc["p_raw"] - 8.0 * mc["min_cell_p_raw"]) < 1e-12
+    assert mc["p_raw"] < 0.01  # clears Holm Step 1 even after 8x within-H3 Bonferroni!
+    assert mc["r3_min_rand_gap"] is not None and mc["r3_min_rand_gap"] > 0.70
+
     # H5 exact OSF §3 binomial p-values check:
     # 11/11 -> 0.0009765625; 10/11 -> 0.01171875; 11/12 -> 0.00634765625
     models_11 = sorted(C.SSL_MODELS | C.LABEL_TEXT_MODELS)
@@ -278,4 +305,16 @@ def test_confound_regression_and_cli_smoke(tmp_path: Path):
     assert (out_dir / "summary_confirmatory_stats.md").exists()
     out_j = json.loads((out_dir / "confirmatory_stats.json").read_text())
     assert len(out_j["holm_family"]) == 5
-    assert out_j["confound_regression"]["I2_log_ratio_R_m"]["status"] == "DESCRIPTIVE_ONLY_UNDERPOWERED"
+    cr = out_j["confound_regression"]["I2_log_ratio_R_m"]
+    assert cr["status"] == "DESCRIPTIVE_ONLY_UNDERPOWERED"
+
+    # Collinearity invariance check on real 12-model registry (patch_size=14 <=> native_res=518):
+    # R^2(full) MUST ALWAYS be >= max(R^2(obj_only), R^2(covs_only))!
+    import yaml
+    reg = {r["id"]: r for r in yaml.safe_load((REPO_ROOT / "configs" / "checkpoints.yaml").read_text())}
+    y11 = {m: float(i) * 0.1 + (0.5 if m in C.LABEL_TEXT_MODELS else 0.0) for i, m in enumerate(sorted(C.SSL_MODELS | C.LABEL_TEXT_MODELS))}
+    cr11 = C.fit_confound_regression_descriptive(y11, reg)
+    assert cr11["n_complete"] == 11 and cr11["skipped_missing_covariates"] == []
+    assert cr11["collinear_predictors_detected"] is True
+    assert cr11["r2_full"] >= cr11["r2_covariates_only"] - 1e-6
+    assert cr11["r2_full"] >= cr11["r2_objective_only"] - 1e-6

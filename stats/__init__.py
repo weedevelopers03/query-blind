@@ -17,6 +17,7 @@ from .confirmatory import (
     test_h2b_i2_log_ratio_leg,
     test_h2b_m3_leg,
     test_h3_m4_artifact_sensitivity,
+    test_h3_m4_multicell,
     test_h5_ralr_sign_test,
 )
 
@@ -38,5 +39,6 @@ __all__ = [
     "test_h2b_i2_log_ratio_leg",
     "test_h2b_m3_leg",
     "test_h3_m4_artifact_sensitivity",
+    "test_h3_m4_multicell",
     "test_h5_ralr_sign_test",
 ]

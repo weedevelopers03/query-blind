@@ -81,13 +81,18 @@ def _load_h1_from_m1_dir(
 
 def _load_h2_and_i2_from_dir(i1_i2_dir: Path, *, seed: int = 0) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     models_dir = i1_i2_dir / "models"
-    if not models_dir.exists():
+    report_p = i1_i2_dir / "i1_i2_report.json"
+    if models_dir.exists() and list(models_dir.glob("*.json")):
+        model_dicts = [_load_json(mp) for mp in sorted(models_dir.glob("*.json"))]
+    elif report_p.exists():
+        rep_all = _load_json(report_p)
+        model_dicts = [rep_all[k] for k in sorted(rep_all.keys()) if isinstance(rep_all[k], dict) and "model_id" in rep_all[k]]
+    else:
         return None, None
     h2_records: list[dict[str, Any]] = []
     i2_rows: list[dict[str, Any]] = []
 
-    for mp in sorted(models_dir.glob("*.json")):
-        d = _load_json(mp)
+    for d in model_dicts:
         mid = d["model_id"]
         obj = d.get("objective")
         # H2: L_int=1, S4
@@ -122,6 +127,8 @@ def _load_h2_and_i2_from_dir(i1_i2_dir: Path, *, seed: int = 0) -> tuple[dict[st
 
     h2_res = C.test_h2_i1_supervision_contrast(h2_records) if h2_records else None
     i2_res = C.test_h2b_i2_log_ratio_leg(i2_rows, seed=seed) if i2_rows else None
+    if h2_res is not None:
+        h2_res["per_model_delta_box_auc"] = {r["model_id"]: float(r["delta_box_auc"]) for r in h2_records}
     return h2_res, i2_res
 
 
@@ -188,8 +195,8 @@ def _load_h3_from_m4_dir(
     m4_dir: Path,
     *,
     reviewer_controls_json: Path | None = None,
-    layer_key: str = "l11",
-    level: str = "R2",
+    layer_keys: list[str] | None = None,
+    levels: list[str] | None = None,
     n_boot: int = 2000,
     seed: int = 0,
 ) -> dict[str, Any] | None:
@@ -197,44 +204,66 @@ def _load_h3_from_m4_dir(
     if not rep_p.exists():
         return None
     rep = _load_json(rep_p)
-    lr = rep.get("layers", {}).get(layer_key)
-    if lr is None:
-        return None
-    d = lr["levels"][level]["metrics"]["cka"]
-    tau_c0_c1 = float(d["tau_c0_c1_full"])
+    ds_name = str(rep.get("dataset", "imagenet")).lower()
+    layers_dict = rep.get("layers", {})
+    eff_layers = layer_keys if layer_keys else list(layers_dict.keys())
+    eff_levels = levels if levels else ["R2", "R3"]
 
-    # Prefer raw split-half arrays if present; else reconstruct normal approximation from reported mean & 95% CI
-    def _extract_samples(block: dict[str, Any]) -> np.ndarray:
+    # Optional matched random-drop C1_rand lookup from reviewer_controls.json (R3 CKA)
+    rc_by_layer: dict[str, float] = {}
+    c1_rand_source = None
+    if reviewer_controls_json is not None and reviewer_controls_json.exists():
+        rc = _load_json(reviewer_controls_json)
+        m4r = rc.get("m4_matched_random_drop", {})
+        ds_key = "imagenet_1k" if "imagenet" in ds_name else ("waterbirds_2k" if "waterbirds" in ds_name else "cub")
+        if isinstance(m4r, dict) and ds_key in m4r and isinstance(m4r[ds_key], dict):
+            for lk, entry in m4r[ds_key].items():
+                if isinstance(entry, dict) and "tau_c0_c1_rand_mean" in entry:
+                    rc_by_layer[lk] = float(entry["tau_c0_c1_rand_mean"])
+            if rc_by_layer:
+                c1_rand_source = f"{reviewer_controls_json.name}:{ds_key} (R3 CKA)"
+
+    def _extract_samples(block: dict[str, Any], s_offset: int) -> np.ndarray:
         if "samples" in block and block["samples"]:
             return np.asarray(block["samples"], dtype=np.float64)
         mu = float(block["mean"])
         sd = max((float(block["ci95_high"]) - float(block["ci95_low"])) / (2.0 * 1.959964), 1e-6)
-        rng = np.random.default_rng(seed + 101)
+        rng = np.random.default_rng(seed + 101 + s_offset)
         return rng.normal(loc=mu, scale=sd, size=200)
 
-    ds = _extract_samples(d["diff_same_minus_noise"])
-    dc = _extract_samples(d["diff_cross_minus_noise"])
+    cell_results: list[dict[str, Any]] = []
+    idx_counter = 0
+    for lk in eff_layers:
+        lr = layers_dict.get(lk)
+        if lr is None:
+            continue
+        for lv in eff_levels:
+            lv_obj = lr.get("levels", {}).get(lv)
+            if lv_obj is None:
+                continue
+            d = lv_obj.get("metrics", {}).get("cka")
+            if d is None or "diff_same_minus_noise" not in d or "diff_cross_minus_noise" not in d:
+                continue
+            ds = _extract_samples(d["diff_same_minus_noise"], idx_counter * 2)
+            dc = _extract_samples(d["diff_cross_minus_noise"], idx_counter * 2 + 1)
+            tau_rand = rc_by_layer.get(lk) if lv == "R3" else None
+            cell_results.append(
+                C.test_h3_m4_artifact_sensitivity(
+                    ds, dc,
+                    tau_c0_c1=float(d["tau_c0_c1_full"]),
+                    tau_c0_c1_rand=tau_rand,
+                    n_boot=n_boot,
+                    seed=seed + idx_counter,
+                    label=f"{lk}:{lv}:cka",
+                )
+            )
+            idx_counter += 1
 
-    tau_rand = None
-    if reviewer_controls_json is not None and reviewer_controls_json.exists():
-        rc = _load_json(reviewer_controls_json)
-        # Look for matched C1_rand entry in reviewer_controls.json
-        c1r = rc.get("m4_c1_random_drop", {})
-        if isinstance(c1r, dict):
-            key = f"{layer_key}_{level}_cka"
-            if key in c1r:
-                tau_rand = float(c1r[key]["tau_c0_c1_rand_mean"])
-            elif layer_key in c1r and level in c1r[layer_key]:
-                tau_rand = float(c1r[layer_key][level]["tau_c0_c1_rand_mean"])
-
-    return C.test_h3_m4_artifact_sensitivity(
-        ds, dc,
-        tau_c0_c1=tau_c0_c1,
-        tau_c0_c1_rand=tau_rand,
-        n_boot=n_boot,
-        seed=seed,
-        label=f"{layer_key}:{level}:cka",
-    )
+    if not cell_results:
+        return None
+    if len(cell_results) == 1:
+        return cell_results[0]
+    return C.test_h3_m4_multicell(cell_results, c1_rand_source=c1_rand_source)
 
 
 def _load_h5_from_ralr_dirs(ralr_specs: list[str]) -> dict[str, Any] | None:
@@ -282,6 +311,21 @@ def format_markdown_summary(payload: dict[str, Any]) -> str:
         stat = row.get("headline_stat", "—")
         lines.append(f"| **{row['id']}** | `{pr}` | {rk} | `{ast}` | `{pa}` | {rej} | {stat} |")
 
+    if payload.get("details", {}).get("H3", {}).get("per_cell"):
+        h3d = payload["details"]["H3"]
+        lines.append(f"\n## 1B. H3 Multi-Cell M4 Breakdown ({h3d['n_cells_triggered']}/{h3d['n_cells_total']} CKA cells < τ_noise; Bonferroni-adjusted inside H3)\n")
+        if h3d.get("c1_rand_source"):
+            lines.append(f"*Note: `C1_rand` reference values loaded from `{h3d['c1_rand_source']}`.*\n")
+        lines.append("| Cell | τ(C0,C1) | Δsame | Δcross | Cell p_raw | Below Noise? | C1_rand Gap |")
+        lines.append("|---|---:|---:|---:|---:|---|---:|")
+        for c in h3d["per_cell"]:
+            rg = f"{c['rand_gap']:+.4f}" if c.get("rand_gap") is not None else "—"
+            bn = "YES" if c.get("both_below_noise") else "no"
+            lines.append(
+                f"| `{c['cell']}` | {c['tau_c0_c1']:.3f} | {c['mean_delta_same']:+.3f} | "
+                f"{c['mean_delta_cross']:+.3f} | `{c['p_raw']:.4f}` | {bn} | {rg} |"
+            )
+
     if payload.get("confound_regression"):
         lines.append("\n## 2. §10.3 Descriptive Confound Regression (Underpowered; Descriptive Only)\n")
         for yname, cr in payload["confound_regression"].items():
@@ -313,8 +357,8 @@ def parse_args(argv=None):
     ap.add_argument("--m3_dir", default=None)
     ap.add_argument("--m3_layer", type=int, default=8)
     ap.add_argument("--m4_dir", default=None)
-    ap.add_argument("--m4_layer", default="l11")
-    ap.add_argument("--m4_level", default="R2")
+    ap.add_argument("--m4_layers", default="l8,l9,l10,l11", help="Comma-separated M4 layer keys (default: all 4 last-third layers).")
+    ap.add_argument("--m4_levels", default="R2,R3", help="Comma-separated M4 levels (default: R2,R3).")
     ap.add_argument("--reviewer_controls_json", default=None)
     ap.add_argument("--ralr_dirs", default="", help="Comma-separated name=path entries for RALR benchmarks.")
     ap.add_argument("--registry", default=str(REPO_ROOT / "configs" / "checkpoints.yaml"))
@@ -373,19 +417,29 @@ def main(argv=None):
     # H3
     if args.m4_dir:
         rc_p = Path(args.reviewer_controls_json) if args.reviewer_controls_json else None
+        m4_layers = [x.strip() for x in args.m4_layers.split(",") if x.strip()]
+        m4_levels = [x.strip() for x in args.m4_levels.split(",") if x.strip()]
         h3 = _load_h3_from_m4_dir(
             Path(args.m4_dir),
             reviewer_controls_json=rc_p,
-            layer_key=args.m4_layer,
-            level=args.m4_level,
+            layer_keys=m4_layers,
+            levels=m4_levels,
             n_boot=args.n_boot,
             seed=args.seed,
         )
         if h3 is not None:
-            h3["headline_stat"] = (
-                f"Δsame={h3['mean_delta_same']:+.3f}, Δcross={h3['mean_delta_cross']:+.3f}, "
-                f"rand_gap={h3['rand_gap']}"
-            )
+            if "n_cells_triggered" in h3:
+                rg_txt = f", R3 min rand_gap={h3['r3_min_rand_gap']:+.3f}" if h3.get("r3_min_rand_gap") is not None else ""
+                h3["headline_stat"] = (
+                    f"{h3['n_cells_triggered']}/{h3['n_cells_total']} cells < noise "
+                    f"(strongest {h3['strongest_cell']}: Δsame={h3['strongest_delta_same']:+.3f}, "
+                    f"Δcross={h3['strongest_delta_cross']:+.3f}{rg_txt})"
+                )
+            else:
+                h3["headline_stat"] = (
+                    f"Δsame={h3['mean_delta_same']:+.3f}, Δcross={h3['mean_delta_cross']:+.3f}, "
+                    f"rand_gap={h3['rand_gap']}"
+                )
             tests_in.append(h3)
             details["H3"] = {k: v for k, v in h3.items() if k != "boot_samples"}
 
@@ -408,6 +462,10 @@ def main(argv=None):
     if i2_leg is not None and i2_leg.get("per_model"):
         r_map = {r["model_id"]: float(r["R_m"]) for r in i2_leg["per_model"]}
         confound_regs["I2_log_ratio_R_m"] = C.fit_confound_regression_descriptive(r_map, registry)
+    if h2 is not None and h2.get("per_model_delta_box_auc"):
+        confound_regs["I1_S4_L1_delta_box_auc"] = C.fit_confound_regression_descriptive(
+            h2["per_model_delta_box_auc"], registry
+        )
 
     payload = {
         "holm_alpha": 0.05,

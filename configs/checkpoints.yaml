@@ -115,26 +115,28 @@
   objective: self_distillation
   arch: ViT-S/14
   params_m: 22.1
+  depth: 12   # verified via timm vit_small_patch14_dinov2.lvd142m (12 blocks)
   pretrain_data: LVD-142M
   pretrain_images_m: 142
+  epochs: 9.01  # derived from Oquab et al. (arXiv:2304.07193, Appendix B Table 16): DINOv2-S distilled for 625k iters x global batch 2048 = 1.28B samples seen / 142M = 9.01 effective dataset epochs
   registers: 0
   native_res: 518  # §1.5: run at 196px for the primary protocol
-  license: Apache-2.0  # confirmed on the official facebookresearch/dinov2 MODEL_CARD.md
+  license: Apache-2.0  # confirmed on official facebookresearch/dinov2 MODEL_CARD.md and timm pretrained_cfg
   set: B
-  verify: true  # epochs: DINOv2 is reported in iterations/samples-seen, not a simple epoch count over LVD-142M - needs the paper's actual schedule, not guessed here
 
 - id: dinov2_vits14_reg
   source: timm/vit_small_patch14_reg4_dinov2.lvd142m
   objective: self_distillation
   arch: ViT-S/14
   params_m: 22.1
+  depth: 12   # verified via timm vit_small_patch14_reg4_dinov2.lvd142m (12 blocks, 4 register tokens)
   pretrain_data: LVD-142M
   pretrain_images_m: 142
+  epochs: 9.01  # matched DINOv2-S distilled schedule (625k iters x batch 2048 / 142M = 9.01 effective dataset epochs; facebookresearch/dinov2 MODEL_CARD.md confirms distillation from ViT-g/14+reg4 teacher via the DINOv2 recipe)
   registers: 4
   native_res: 518
   license: Apache-2.0
   set: B
-  verify: true  # same epochs caveat as dinov2_vits14
 
 - id: dinov2_vitb14
   source: timm/vit_base_patch14_dinov2.lvd142m
@@ -233,12 +235,15 @@
   source: timm/vit_base_patch16_clip_224.metaclip_2pt5b
   objective: image_text_contrastive
   arch: ViT-B/16
-  params_m: 86
-  pretrain_data: MetaCLIP (2.5B image-text pairs)
+  params_m: 86.0  # 85.8M visual backbone in timm (num_classes=0)
+  depth: 12   # verified via timm vit_base_patch16_clip_224.metaclip_2pt5b (12 blocks, 0 registers)
+  pretrain_data: MetaCLIP-2.5B (2.5B image-text pairs)
+  pretrain_images_m: 2500
+  epochs: 5.12  # derived from Xu et al. (ICLR 2024, MetaCLIP b16_fullcc2.5b): 12.8B samples seen / 2.5B curated pool = 5.12 effective dataset epochs (global batch 32,768)
+  registers: 0
   native_res: 224
-  license: CC-BY-NC  # per the facebookresearch/MetaCLIP repo's own license note; the timm port's exact license line not separately checked
+  license: CC-BY-NC-4.0  # confirmed in facebookresearch/MetaCLIP repo and timm pretrained_cfg
   set: C
-  verify: true  # confirm this exact tag is the "same source as Web-SSL DINO" the proposal means, vs. a different MetaCLIP size/tag
 
 # ---------------------------------------------------------------------------------------- Set D
 # Scale and dense anchoring. Isolates: Gram anchoring, scale. 7B teacher excluded (compute).
@@ -335,13 +340,15 @@
   source: timm/deit3_small_patch16_224.fb_in22k_ft_in1k
   objective: label_supervised
   arch: ViT-S/16
-  params_m: 22.1
+  params_m: 22.1  # 21.7M backbone + 0.4M 1000-way head (verified via timm)
+  depth: 12   # verified via timm deit3_small_patch16_224.fb_in22k_ft_in1k (12 blocks, 0 registers)
   pretrain_data: IN21k (fine-tuned on IN1k)
   pretrain_images_m: 14
+  epochs: 240  # facebookresearch/deit README_revenge.md official IN-21k pretrain command for deit_small_patch16_LS uses --epochs 240 (followed by IN-1k fine-tuning)
   registers: 0
   native_res: 224
+  license: Apache-2.0  # confirmed in timm pretrained_cfg for deit3_small_patch16_224.fb_in22k_ft_in1k
   set: E
-  verify: true  # confirm this is the exact variant meant vs. a not-fine-tuned IN-21k-only tag; epochs/license not pinned down
 
 # ---------------------------------------------------------------------------------------- Set F
 # Modern image-text. Isolates: generality to 2025 encoders.

@@ -865,6 +865,62 @@ def test_h3_m4_artifact_sensitivity(
     }
 
 
+def test_h3_m4_multicell(
+    cell_results: list[dict[str, Any]],
+    *,
+    c1_rand_source: str | None = None,
+) -> dict[str, Any]:
+    """OSF §3 H3 multi-cell aggregation over all matched (l8..l11) x (R2, R3) CKA cells.
+
+    Applies conservative within-H3 Bonferroni adjustment across all K evaluated cells:
+        p_raw(H3) = min(1.0, K * min_c p_cell(c))
+    so H3 pays the full K-cell multiplicity penalty BEFORE entering the 5-test Holm family.
+    """
+    valid = [c for c in cell_results if c.get("p_raw") is not None and np.isfinite(float(c["p_raw"]))]
+    K = len(valid)
+    if K == 0:
+        return {
+            "id": "H3",
+            "n_cells_total": 0,
+            "n_cells_triggered": 0,
+            "triggered_cells": [],
+            "p_raw": float("nan"),
+            "per_cell": [],
+        }
+
+    triggered = [
+        c["cell"] for c in valid
+        if bool(c.get("both_below_noise")) and float(c["p_raw"]) < (0.05 / K)
+    ]
+    # Pick representative cell with smallest p_raw (tie-broken by most negative mean_delta_same)
+    best = min(valid, key=lambda c: (float(c["p_raw"]), float(c.get("mean_delta_same", 0.0))))
+    p_bonf = float(min(1.0, K * float(best["p_raw"])))
+    rand_ok_cells = [c["cell"] for c in valid if c.get("rand_gap_ok")]
+    r3_gaps = [c["rand_gap"] for c in valid if ":R3:" in c["cell"] and c.get("rand_gap") is not None]
+
+    per_cell_clean = [{k: v for k, v in c.items() if k != "boot_samples"} for c in valid]
+    out: dict[str, Any] = {
+        "id": "H3",
+        "aggregation": f"bonferroni_across_{K}_cells",
+        "n_cells_total": K,
+        "n_cells_triggered": len(triggered),
+        "triggered_cells": triggered,
+        "strongest_cell": best["cell"],
+        "strongest_delta_same": round(float(best["mean_delta_same"]), 4),
+        "strongest_delta_cross": round(float(best["mean_delta_cross"]), 4),
+        "strongest_tau_c0_c1": round(float(best["tau_c0_c1"]), 4),
+        "min_cell_p_raw": float(best["p_raw"]),
+        "p_raw": p_bonf,
+        "rand_gap_ok_cells": rand_ok_cells,
+        "r3_min_rand_gap": round(float(min(r3_gaps)), 4) if r3_gaps else None,
+        "c1_rand_source": c1_rand_source,
+        "per_cell": per_cell_clean,
+    }
+    if best.get("boot_samples") is not None:
+        out["boot_samples"] = best["boot_samples"]
+    return out
+
+
 # --------------------------------------------------------------------------- H5: RALR Exact Two-Sided Sign Test
 def test_h5_ralr_sign_test(
     benchmarks: dict[str, dict[str, dict[str, float]]],
@@ -1038,15 +1094,22 @@ def fit_confound_regression_descriptive(
     def _fit_r2(Xm: np.ndarray, alpha_r: float) -> tuple[np.ndarray, float]:
         if Xm.shape[1] == 0 or y_var < 1e-18:
             return np.zeros(Xm.shape[1]), 0.0
-        A = Xm.T @ Xm + alpha_r * np.eye(Xm.shape[1])
-        b = np.linalg.solve(A, Xm.T @ y_c)
+        if alpha_r <= 0.0:
+            # SVD minimum-norm OLS: numerically exact even under exact predictor collinearity
+            # (e.g. patch_size=14 <=> native_res=518 across DINOv2 models).
+            b, _, _, _ = np.linalg.lstsq(Xm, y_c, rcond=None)
+        else:
+            A = Xm.T @ Xm + alpha_r * np.eye(Xm.shape[1])
+            b = np.linalg.solve(A, Xm.T @ y_c)
         pred = Xm @ b
         r2 = 1.0 - float(np.sum((y_c - pred) ** 2)) / y_var
         return b, r2
 
-    # Use tiny ridge regularization automatically when n <= p + 1 (always disclosed)
-    rank_def = n <= len(active_cols) + 1
-    eff_alpha = float(ridge_alpha) if rank_def else 0.0
+    mat_rank = int(np.linalg.matrix_rank(X_std))
+    rank_def = (n <= len(active_cols) + 1) or (mat_rank < len(active_cols))
+    # For pure descriptive variance decomposition (R²), always use exact SVD OLS when n > mat_rank + 1
+    # so R²(full) >= max(R²(obj), R²(covs)) holds mathematically; apply ridge only when n <= mat_rank + 1.
+    eff_alpha = float(ridge_alpha) if n <= mat_rank + 1 else 0.0
     beta_full, r2_full = _fit_r2(X_std, eff_alpha)
 
     obj_idx = [i for i, c in enumerate(active_cols) if c in ("is_label_text", "is_recon")]
@@ -1058,7 +1121,9 @@ def fit_confound_regression_descriptive(
         "status": "DESCRIPTIVE_ONLY_UNDERPOWERED",
         "n_complete": n,
         "p_active_predictors": len(active_cols),
-        "rank_deficient_ridge_applied": rank_def,
+        "design_matrix_rank": mat_rank,
+        "collinear_predictors_detected": mat_rank < len(active_cols),
+        "rank_deficient_ridge_applied": eff_alpha > 0.0,
         "ridge_alpha": eff_alpha,
         "r2_objective_only": round(r2_obj_only, 4),
         "r2_covariates_only": round(r2_cov_only, 4),

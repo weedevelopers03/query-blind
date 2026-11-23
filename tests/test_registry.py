@@ -54,9 +54,28 @@ def status(path=REGISTRY):
     return reg, out
 
 
+EXPANSION4 = {
+    "DINOv2 ViT-S/14": ["dinov2_vits14"],
+    "DINOv2 ViT-S/14 + registers": ["dinov2_vits14_reg"],
+    "DeiT-III ViT-S/16 (IN21k)": ["deit3_small_patch16_224_in21k"],
+    "MetaCLIP ViT-B/16": ["metaclip_vitb16"],
+}
+
+
 def test_pilot8_registry_complete():
     _, st = status()
     bad = {n: p for n, (_, p) in st.items() if p}
+    assert not bad, bad
+
+
+def test_zoo12_registry_complete():
+    reg = load()
+    bad = {}
+    for name, ids in {**PILOT8, **EXPANSION4}.items():
+        hit = next((i for i in ids if i in reg), None)
+        p = ["no row with id " + " / ".join(ids)] if hit is None else problems(reg[hit])
+        if p:
+            bad[name] = p
     assert not bad, bad
 
 
