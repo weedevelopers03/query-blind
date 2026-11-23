@@ -3,7 +3,7 @@
 - **Student:** Isma Anwar (`SP25-RCS-011`, MSCS, COMSATS University Islamabad)
 - **Supervisor:** Dr. Tehseen Zia
 - **Date:** 2026-11-23
-- **Repository:** `https://github.com/weedevelopers03/query-blind` (frozen split & protocol commit `9cf7490`; pilot runs logged under `4e42dc56`, `5a83128`, `789a6b0`, `644228d`)
+- **Repository:** `https://github.com/weedevelopers03/query-blind` (splits commit `9cf7490`; frozen I1/I2 & I5 protocol `a0cfbe5`; I5 parser fix `e28e35b`; pilot runs logged under `4e42dc56`, `5a83128`, `789a6b0`, `644228d`)
 - **Archived Results Backup:** `IsmaAnwar/queryblind-results` (`results_backup.zip`, Hugging Face private dataset)
 - **Pre-Registration:** [osf_preregistration.md](osf_preregistration.md)
 
@@ -18,7 +18,8 @@ I have completed all seven deliverables required by Methodology Guide §11.1 acr
   - *Criterion 2 (M4 artifact-controlled similarity `τ(C0, C1) < τ_noise`):* **Decisive pass on all three datasets** (`CUB-500`, `Waterbirds-2,000`, `ImageNet-1,000`). Masking high-norm outlier tokens (`OUT`, $> \text{median} + 5\,\text{MAD}$) drops patch-level (`R3`) debiased CKA rank correlation from split-half noise `τ_noise = 0.939–0.983` down to `τ(C0, C1) = 0.090–0.476` (`Δτ = -0.505` to `-0.864`, both same-half and cross-half 95% CIs far below zero), whereas a 5-seed matched-count random patch drop stays at `τ(C0, C1_rand) = 0.967–0.997` (`sd ≤ 0.007`).
 - **Hypothesis Status After Pilot:**
   - **H1 (Query-Blind Localization as pre-registered): Not supported.** All 8 ViTs exhibit high in-cone invariance (`QII_S4 = 0.92–1.00`) because `[CLS]` queries concentrate tightly around their empirical mean ($\cos(\mathbf{q}, \boldsymbol{\mu}) = 0.85–0.999$). This matches the proposal's own *"architectural, not objective-driven"* fallback outcome.
-  - **H2 / H2b (Routing Differences):** **Supported on M3 Waterbirds background main effect** against size-matched SSL ranges at matched layers `l=8` (`deit3` `1.9×–3.1×` `S/16` SSL; `openclip` `2.7×–3.9×` `B`-scale SSL) and `l=11` (`deit3` `2.7×–3.3×` `S/16` SSL; `openclip` `1.6×–1.8×` `B`-scale SSL). Exploratory CUB I1 query replacement is **not supported** (`deit3_small_patch16_224` improves `+0.021–0.024`). ImageNet-1K I1/I2 and I5 outputs are held in a separate review packet pending inspection before integration into this report.
+  - **H2 (I1 Query Replacement):** **Not supported on exploratory CUB** (`deit3_small_patch16_224` improves `+0.021–0.024`; all other models remain within `±0.020`). ImageNet-1K I1/I2 and I5 outputs are held in a separate review packet pending inspection before integration into this report.
+  - **H2b (Background Routing):** **Supported on M3 Waterbirds background main effect** against size-matched SSL ranges at matched layers `l=8` (`deit3_small_patch16_224` `1.9×–3.1×` `S/16` SSL; `openclip_vitb16` `2.7×–3.9×` `B`-scale SSL) and `l=11` (`deit3_small_patch16_224` `2.7×–3.3×` `S/16` SSL; `openclip_vitb16` `1.6×–1.8×` `B`-scale SSL), with the **I2 between-family log-ratio leg pending** review and 12-model expansion.
   - **H3 (Artifact-Distorted Similarity):** **Strongly supported** for `C1` masking across all 3 datasets; `C2` (test-time registers via I3) remains to be tested.
   - **H4 (Registers):** `QII_S4` survives registers (`0.972 → 0.983` CUB; `0.919 → 0.938` IN-1K) and `share_OUT` drops `93%` (`0.15 → 0.01`) as mass shifts to `REG` (`0.15`). The `+4.3 pt` CUB / `+5.7 pt` IN-1K map `box-AUC` gain is a map-quality effect rather than H4 itself.
   - **H5 (RALR):** **Mixed on primary `box-AUC`** (CUB `6/8`, two-sided `p = 0.289`; IN-1K `4/8`, two-sided `p = 1.000`), **strong on zero-tuning `Otsu CorLoc@0.5`** (CUB `7/8`, `0.440 → 0.693`; IN-1K `8/8`, `0.329 → 0.599`, two-sided `p = 0.0078`, beating top-2% winsorized and OUT-masked `[CLS]@l*` controls on `8/8` IN-1K models).
@@ -188,7 +189,8 @@ Measured on a single Kaggle Tesla T4 GPU (`16 GB`):
 | `pilot_ralr_cub` | CUB-200-2011 | 500 | 967.2 | 68.1 | 47.6 | `4e42dc56` |
 | `pilot_ralr_in1k` | ImageNet-1K-val | 1,000 | 1,973.9 | 59.1 | 42.3 | `4e42dc56` |
 
-- **Revised Compute Estimate & Coverage Statement (vs. Guide's `~90 GPU-hours` MVP budget):**
+- **Revised Compute Estimate & Coverage Statement (vs. Guide's `~90` A100-class GPU-hours MVP budget):**
+  - **Hardware non-comparability caveat:** My `7.82` estimate is measured in **single Tesla T4 GPU-hours**, whereas the Methodology Guide's `~90` GPU-hour MVP (and `~190` GPU-hour full) budgets are stated in **A100-class GPU-hours**. Because an A100 is substantially faster than a T4, `7.82 T4-h` corresponds to an even smaller fraction of an A100 budget — the real scope gap is **larger** than `7.82` vs `90` suggests.
   - **Covered in the `7.82 T4 GPU-hours` figure:** 12 ViT-S/B checkpoints (Sets A+B only), `14×14` primary matched grid (`224px /16`, `196px /14`), 10k-image M1/M2 (`2.53h`), full `5,794`-image Waterbirds M3 (`0.31h`), 10k-image M4 `C0/C1` (`1.14h`), 1k-image cached-`z_start` I1/I2/I5 (`2.43h`), and 3×1k-image RALR (`1.41h`).
   - **Explicitly OMITTED from `7.82h` (accounting for the gap to the Guide's `~90 GPU-hours` MVP / `~190 GPU-hours` full budget):**
     1. Full-scale localization sweeps (`50,000`-image ImageNet-1K val WSOL and `30,000`-image OpenImages30k; scaling RALR from `1k` to `50k + 30k + 5.8k` adds ~`35–45 T4-h`),
