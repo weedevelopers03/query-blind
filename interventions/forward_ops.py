@@ -182,6 +182,7 @@ def forward_from_block_with_interventions(
     ko_masks: dict[int, torch.Tensor] | None = None,         # {layer_idx: (B, T) bool}
     ko_mode: str = "zero",
     v_means: dict[int, torch.Tensor] | None = None,          # {layer_idx: (H, d_h)}
+    cls_state_overrides: dict[int, torch.Tensor] | None = None,  # {layer_idx: (B, D)} for I5
     capture_clean_stats: bool = False,
 ) -> dict[str, Any]:
     """Run blocks [start_block .. L-1] with optional I1/I2 edits on the [CLS] read-out row.
@@ -202,6 +203,7 @@ def forward_from_block_with_interventions(
     q_ov = q_cls_overrides or {}
     ko_m = ko_masks or {}
     vm = v_means or {}
+    cls_ov = cls_state_overrides or {}
 
     cls_idx = layout["cls_idx"]
     patch_idx = layout["patch_idx"]
@@ -212,12 +214,18 @@ def forward_from_block_with_interventions(
     v_sum_by_layer = {}
     v_count_by_layer = {}
     patch_norms_by_l = {}
+    cls_state_in_by_l = {}
     last_attn_patch = None
     last_head_weights = None
     last_weighted_map = None
 
     if adapter.family == "timm_vit":
         for l in range(start_block, n_blocks):
+            if capture_clean_stats:
+                cls_state_in_by_l[l] = z[:, cls_idx, :].float().cpu()
+            if l in cls_ov:
+                z = z.clone()
+                z[:, cls_idx, :] = cls_ov[l].to(device=z.device, dtype=z.dtype)
             blk = model.blocks[l]
             has_edit = (l in q_ov) or (l in ko_m)
             need_detail = has_edit or capture_clean_stats or (l == n_blocks - 1)
@@ -266,6 +274,11 @@ def forward_from_block_with_interventions(
     elif adapter.family == "open_clip_vit":
         vt = adapter._visual(model)
         for l in range(start_block, n_blocks):
+            if capture_clean_stats:
+                cls_state_in_by_l[l] = z[:, cls_idx, :].float().cpu()
+            if l in cls_ov:
+                z = z.clone()
+                z[:, cls_idx, :] = cls_ov[l].to(device=z.device, dtype=z.dtype)
             blk = vt.transformer.resblocks[l]
             has_edit = (l in q_ov) or (l in ko_m)
             need_detail = has_edit or capture_clean_stats or (l == n_blocks - 1)
@@ -338,4 +351,5 @@ def forward_from_block_with_interventions(
         out["v_sum_by_layer"] = v_sum_by_layer
         out["v_count_by_layer"] = v_count_by_layer
         out["patch_norms_by_l"] = patch_norms_by_l
+        out["cls_state_in_by_l"] = cls_state_in_by_l
     return out
