@@ -24,11 +24,11 @@ This pre-registration is posted retroactively relative to Dr. Tehseen Zia's 6 No
   3. Pilot-8 **ImageNet-1K I1/I2** and **ImageNet-1K / CUB-500 I5** — **run under the committed protocol (`a0cfbe5`, summary parser `e28e35b`) before OSF posting, results seen.** These are classified as *run under committed protocol before posting*, **not** pre-registered confirmatory.
   4. ImageNet-1K feature sanity check (`deit3_small_patch16_224` top-1 = `82.10%`, `mocov3_vitb16` `kNN@20 = 48.90%`).
 - **Unseen at OSF posting (genuinely pre-registered confirmatory):**
-  1. **4 new frozen checkpoints** (all pre-existing in `configs/checkpoints.yaml`, commit `8bfc63b`, all `14×14` matched grid) expanding Pilot-8 to **12 models**:
+  1. **4 new frozen checkpoints** (all pre-existing in `configs/checkpoints.yaml`, commit `8bfc63b`, all `14×14` matched grid) expanding Pilot-8 to **12 models** so every objective family has ≥2 checkpoints for mixed-effects identifiability:
      - `dinov2_vits14` (`Set B`, `self_distillation`, `timm/vit_small_patch14_dinov2.lvd142m`, 196px)
      - `dinov2_vits14_reg` (`Set B`, `self_distillation`, `timm/vit_small_patch14_reg4_dinov2.lvd142m`, 196px)
-     - `deit3_small_patch16_224_in21k` (`label_supervised`, `timm/deit3_small_patch16_224.fb_in22k_ft_in1k`, 224px)
-     - `metaclip_vitb16` (`image_text_contrastive`, `timm/vit_base_patch16_clip_224.metaclip_2pt5b`, 224px)
+     - `deit3_small_patch16_224_in21k` (`Set E`, `label_supervised`, `timm/deit3_small_patch16_224.fb_in22k_ft_in1k`, 224px — retained from Set E specifically as the 2nd `label_supervised` checkpoint)
+     - `metaclip_vitb16` (`Set C`, `image_text_contrastive`, `timm/vit_base_patch16_clip_224.metaclip_2pt5b`, 224px — 2nd `image_text_contrastive` checkpoint alongside `openclip_vitb16` from Set F)
      - Resulting 12-model family counts: **`SSL` = 7** (`dino_vits16`, `ibot_vits16`, `mocov3_vitb16`, `dinov2_vitb14`, `dinov2_vitb14_reg`, `dinov2_vits14`, `dinov2_vits14_reg`), **`label+text` = 4** (`deit3_small_patch16_224`, `deit3_small_patch16_224_in21k`, `openclip_vitb16`, `metaclip_vitb16`; 2 label + 2 text), **`reconstruction` = 1** (`mae_vitb16`, excluded from H2, H2b, and H5 primary tests per §5).
   2. **Intervention I3** (test-time registers) and **M4 Condition `C2`** (artifact-controlled similarity after I3).
   3. **RALR external baselines (`LOST` and `TokenCut`)** under the identical zero-box-tuning protocol, plus a **third localization benchmark (`OpenImages30k`)** for Gate G3.
@@ -129,4 +129,4 @@ All 7 split files reside in `configs/splits/` (loaded verbatim, never regenerate
 - **Gate G1 (Week 3 — Evaluated):** **Passes via M4 (H3)** (`τ(C0, C1) ≪ τ_noise` across CUB, Waterbirds, and ImageNet-1K, confirmed against 5-seed matched random-drop controls).
 - **Gate G2 (Week 8 — Framing Decision):** Determines whether the thesis frames around routing + artifact-controlled similarity + RALR (H2b/H3/H5) or solely around the H3 artifact-controlled measurement audit.
 - **Gate G3 (Week 11 — RALR Main-Result Entry):** RALR enters the main results only if primary `box-AUC` (`n = 11` non-degenerate models) clears Holm on ≥2 of 3 benchmarks.
-- **Pre-registered Scope Cuts (4 Dec first draft, 16 Dec final):** Cut Set E, Universal SAEs, VOC12/COCO20k, medical extension, and I4 linear stitching; retain correctness suite, Waterbirds balanced 2×2 congruence, `[CLS]@l*` + spike-clipped/`LOST`/`TokenCut` baselines, the 4 pre-registered expansion models (§1, subject to the 16 Dec fallback rule), and descriptive confound regression.
+- **Pre-registered Scope Cuts (4 Dec first draft, 16 Dec final):** Cut remaining Set E checkpoints (keeping only `deit3_small_patch16_224_in21k` listed in §1), Universal SAEs, VOC12/COCO20k, medical extension, and I4 linear stitching; retain correctness suite, Waterbirds balanced 2×2 congruence, `[CLS]@l*` + spike-clipped/`LOST`/`TokenCut` baselines, the 4 pre-registered expansion models (§1, subject to the 16 Dec fallback rule), and descriptive confound regression.
