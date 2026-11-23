@@ -347,19 +347,50 @@ def load_imagenet_val_pilot_split(
     if not img_root.is_dir():
         raise FileNotFoundError(f"ImageNet val images_dir not found: {img_root}")
 
-    exts = {".jpeg", ".jpg", ".png"}
+    exts = (".JPEG", ".jpeg", ".jpg", ".JPG", ".png", ".PNG")
+    ext_set = {".jpeg", ".jpg", ".png"}
+    split_path = Path(split_file) if split_file is not None else None
+    xr = Path(xml_dir) if xml_dir is not None else None
+    if xr is not None and not xr.is_dir():
+        raise FileNotFoundError(f"ImageNet XML dir not found: {xr}")
+
+    # Fast path: if frozen split_file already exists and directory is flat (e.g. Kaggle ILSVRC val/*.JPEG),
+    # resolve the exact split stems directly in O(N) stat calls instead of scanning 50,000 files via rglob("*").
+    if split_path is not None and split_path.exists():
+        chosen_stems = [ln.strip() for ln in split_path.read_text().splitlines() if ln.strip()]
+        fast_samples: list[ImageNetSample] = []
+        fast_ok = True
+        for st in chosen_stems:
+            img_p = None
+            for ext in exts:
+                cand = img_root / f"{st}{ext}"
+                if cand.is_file():
+                    img_p = cand
+                    break
+            if img_p is None:
+                fast_ok = False
+                break
+            xp = None
+            if xr is not None:
+                cand_x = xr / f"{st}.xml"
+                if not cand_x.is_file():
+                    fast_ok = False
+                    break
+                xp = cand_x
+            boxes = tuple(parse_ilsvrc_xml_boxes(xp)) if xp is not None else ()
+            fast_samples.append(ImageNetSample(image_id=st, image_path=img_p, xml_path=xp, boxes_0based=boxes))
+        if fast_ok:
+            return fast_samples
+
     stem_to_img: dict[str, Path] = {}
     for p in sorted(img_root.rglob("*")):
-        if p.is_file() and p.suffix.lower() in exts:
+        if p.is_file() and p.suffix.lower() in ext_set:
             stem_to_img[p.stem] = p
     if not stem_to_img:
         raise FileNotFoundError(f"No ImageNet images found under {img_root}")
 
     stem_to_xml: dict[str, Path] = {}
-    if xml_dir is not None:
-        xr = Path(xml_dir)
-        if not xr.is_dir():
-            raise FileNotFoundError(f"ImageNet XML dir not found: {xr}")
+    if xr is not None:
         for xp in sorted(xr.rglob("*.xml")):
             stem_to_xml[xp.stem] = xp
         eligible_stems = sorted(s for s in stem_to_img if s in stem_to_xml)
@@ -369,7 +400,6 @@ def load_imagenet_val_pilot_split(
     if not eligible_stems:
         raise FileNotFoundError(f"No matching image/XML pairs found under {img_root} and {xml_dir}")
 
-    split_path = Path(split_file) if split_file is not None else None
     if split_path is not None and split_path.exists():
         chosen_stems = [ln.strip() for ln in split_path.read_text().splitlines() if ln.strip()]
     else:

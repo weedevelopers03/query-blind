@@ -154,6 +154,27 @@ def _load_imagenet_labels_and_gallery(
 
     img_root = Path(images_dir)
     xml_root = Path(xml_dir)
+    # Fast path: use frozen configs/splits/imagenet_gallery_5000_seed1.txt directly if flat dir & size matches
+    frozen_gal = REPO_ROOT / "configs" / "splits" / "imagenet_gallery_5000_seed1.txt"
+    if frozen_gal.exists() and int(gallery_size) == 5000 and int(seed) == 1:
+        gal_stems = [ln.strip() for ln in frozen_gal.read_text().splitlines() if ln.strip() and ln.strip() not in pilot_stems]
+        fast_paths, fast_labels = [], []
+        fast_ok = len(gal_stems) == 5000
+        if fast_ok:
+            for st in gal_stems:
+                ip = img_root / f"{st}.JPEG"
+                xp = xml_root / f"{st}.xml"
+                if not (ip.is_file() and xp.is_file()):
+                    fast_ok = False
+                    break
+                syn = _parse_ilsvrc_xml_synset(xp)
+                lbl = syn_to_idx.get(syn, -1)
+                if lbl >= 0:
+                    fast_paths.append(ip)
+                    fast_labels.append(lbl)
+        if fast_ok and len(fast_paths) == 5000:
+            return pilot_labels_arr, fast_paths, np.array(fast_labels, dtype=np.int64)
+
     exts = {".jpeg", ".jpg", ".png"}
     stem_to_img = {p.stem: p for p in sorted(img_root.rglob("*")) if p.is_file() and p.suffix.lower() in exts}
     stem_to_xml = {xp.stem: xp for xp in sorted(xml_root.rglob("*.xml"))}

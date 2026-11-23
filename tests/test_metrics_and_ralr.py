@@ -214,9 +214,25 @@ def test_imagenet_xml_loader_multi_object_and_ralr_cli_smoke(tmp_path: Path):
     assert split_file.exists()
     assert len(samples[0].boxes_0based) == 2
 
-    # Reloading from existing split_file must return identical stems verbatim
+    # Reloading from existing split_file must return identical stems verbatim (nested subfolder fallback)
     samples2 = load_imagenet_val_pilot_split(img_dir, xml_dir, n_images=2, seed=99, split_file=split_file)
     assert [s.image_id for s in samples2] == [s.image_id for s in samples]
+
+    # Flat layout + existing split_file MUST use O(N) direct fast path without calling Path.rglob
+    flat_img = tmp_path / "flat_val"
+    flat_img.mkdir()
+    for s in samples:
+        (flat_img / f"{s.image_id}.JPEG").write_bytes(s.image_path.read_bytes())
+    orig_rglob = Path.rglob
+    def _forbid_rglob(self, pattern):
+        raise AssertionError("Flat split_file fast path must NOT call Path.rglob!")
+    Path.rglob = _forbid_rglob  # type: ignore[assignment]
+    try:
+        samples_fast = load_imagenet_val_pilot_split(flat_img, xml_dir, n_images=6, seed=0, split_file=split_file)
+    finally:
+        Path.rglob = orig_rglob  # type: ignore[assignment]
+    assert [s.image_id for s in samples_fast] == [s.image_id for s in samples]
+    assert all(len(s.boxes_0based) == 2 for s in samples_fast)
 
     # Union GT mask covers both boxes
     mask, tboxes = get_transformed_imagenet_gt_mask(samples[0], 160, 120, 224)
