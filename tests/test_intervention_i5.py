@@ -108,15 +108,16 @@ def test_i5_cli_end_to_end_smoke_with_prediction_test(tmp_path: Path):
     (cub / "bounding_boxes.txt").write_text("\n".join(box_lines) + "\n")
     (cub / "image_class_labels.txt").write_text("\n".join(cls_lines) + "\n")
 
-    # Mock M1/M2 directory for 3 models to verify the across-model prediction test table
+    # Mock M1/M2 directory using the EXACT real run_pilot_m1_m2 schema ("layers" list + "layer_summaries" list)
     m12_dir = tmp_path / "m12_mock"
     (m12_dir / "models").mkdir(parents=True)
     for idx, mid in enumerate(("dino_vits16", "deit3_small_patch16_224", "dinov2_vitb14_reg")):
         mock_m12 = {
-            "layers": {
-                "l10": {"qii": {"S4": {"mean": 0.7 + 0.1 * idx}, "S1": {"mean": 0.5 + 0.1 * idx}}, "keydom": {"omega2_key_mean": 0.4 + 0.2 * idx}},
-                "l11": {"qii": {"S4": {"mean": 0.75 + 0.08 * idx}, "S1": {"mean": 0.55 + 0.08 * idx}}, "keydom": {"omega2_key_mean": 0.45 + 0.2 * idx}},
-            }
+            "layers": [10, 11],
+            "layer_summaries": [
+                {"layer": 10, "qii_s4": 0.7 + 0.1 * idx, "qii_s1": 0.5 + 0.1 * idx, "omega2_key": 0.4 + 0.2 * idx},
+                {"layer": 11, "qii_s4": 0.75 + 0.08 * idx, "qii_s1": 0.55 + 0.08 * idx, "omega2_key": 0.45 + 0.2 * idx},
+            ],
         }
         (m12_dir / "models" / f"{mid}.json").write_text(json.dumps(mock_m12))
 

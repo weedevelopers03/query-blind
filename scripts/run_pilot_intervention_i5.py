@@ -306,9 +306,15 @@ def compute_prediction_table(results: dict[str, dict], m1_m2_dir: Path | None) -
             continue
         dat = json.loads(p.read_text())
         layer_map: dict[int, dict] = {}
-        for l_key, lv in dat.get("layers", {}).items():
-            l_idx = int(l_key.lstrip("l")) if isinstance(l_key, str) else int(l_key)
-            layer_map[l_idx] = lv
+        # Real pilot_m1_m2 schema stores a list of dicts under "layer_summaries"
+        if isinstance(dat.get("layer_summaries"), list):
+            for lv in dat["layer_summaries"]:
+                if isinstance(lv, dict) and "layer" in lv:
+                    layer_map[int(lv["layer"])] = lv
+        elif isinstance(dat.get("layers"), dict):
+            for l_key, lv in dat["layers"].items():
+                l_idx = int(l_key.lstrip("l")) if isinstance(l_key, str) else int(l_key)
+                layer_map[l_idx] = lv
         m12_by_model[mid] = layer_map
 
     if len(m12_by_model) < 3:
@@ -329,11 +335,11 @@ def compute_prediction_table(results: dict[str, dict], m1_m2_dir: Path | None) -
                             continue
                         lv = m12_by_model[mid][lr]
                         if predictor == "qii_s4":
-                            xval = lv.get("qii", {}).get("S4", {}).get("mean")
+                            xval = lv.get("qii_s4", lv.get("qii", {}).get("S4", {}).get("mean"))
                         elif predictor == "qii_s1":
-                            xval = lv.get("qii", {}).get("S1", {}).get("mean")
+                            xval = lv.get("qii_s1", lv.get("qii", {}).get("S1", {}).get("mean"))
                         else:
-                            xval = lv.get("keydom", {}).get("omega2_key_mean")
+                            xval = lv.get("omega2_key", lv.get("keydom", {}).get("omega2_key_mean"))
                         match = [rw for rw in r["i5_results"] if rw["L_r"] == lr and rw["mode"] == mode]
                         if xval is None or not match:
                             continue
