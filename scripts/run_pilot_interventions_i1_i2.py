@@ -50,7 +50,9 @@ from interventions import i1_i2 as I12
 from measures import qii
 from measures.routing import detect_outlier_tokens
 from scripts.run_pilot_m1_m2 import (
+    CLASSIFIER_MODEL_IDS,
     PILOT8_SPECS,
+    resolve_model_ids,
     _file_sha256_16,
     _git_sha,
     _load_registry_meta,
@@ -328,7 +330,7 @@ def run_one_model_i1_i2(
     t0 = time.perf_counter()
     adapter, model, mean, std, target_size = load_pilot_model(
         model_id, device, weights_cache, smoke_random=smoke_random,
-        keep_head=(model_id == "deit3_small_patch16_224"),
+        keep_head=(model_id in CLASSIFIER_MODEL_IDS),
     )
     n_blocks = adapter.n_blocks(model)
     max_l_int = min(max(l_int_sweep), n_blocks)
@@ -438,6 +440,9 @@ def run_one_model_i1_i2(
 
     # ----------------------------------------------------------------------- 3. Intervention I1 (Query Replacement)
     i1_results: list[dict] = []
+    per_image_store: dict[str, np.ndarray] = {
+        "clean_box_auc": np.asarray(clean_auc, dtype=np.float32),
+    }
     for l_int in l_int_sweep:
         if l_int > n_blocks:
             continue
@@ -478,6 +483,8 @@ def run_one_model_i1_i2(
             auc_img = np.mean(auc_by_s, axis=0)
             cos_img = np.mean(cos_by_s, axis=0)
             knn_img = np.mean(knn_by_s, axis=0)
+            if int(l_int) == 1 and fam in ("S1", "S4"):
+                per_image_store[f"i1_l1_{fam.lower()}_delta_box_auc"] = np.asarray(auc_img - clean_auc, dtype=np.float32)
             d_auc = paired_bootstrap_diff_ci(auc_img, clean_auc, seed=0)
             d_otsu = paired_bootstrap_diff_ci(otsu_s0, clean_otsu, seed=0)
             d_knn = paired_bootstrap_diff_ci(knn_img, clean_knn_hits, seed=0)
@@ -762,6 +769,11 @@ def run_one_model_i1_i2(
                 # Equal-count FG vs BG_eq_FG (5 seeds from BG \ OUT at size m_FG)
                 "fg_cos_drop": _r4(fg_cos_eq_m),
                 "bg_eq_fg_cos_drop": _r4(bg_cos_eq_m),
+                "log_ratio_fg_over_bg_eq": (
+                    round(float(np.log((max(fg_cos_eq_m, 0.0) + 1e-6) / (max(bg_cos_eq_m, 0.0) + 1e-6))), 4)
+                    if (fg_cos_eq_m is not None and bg_cos_eq_m is not None and np.isfinite(fg_cos_eq_m) and np.isfinite(bg_cos_eq_m))
+                    else None
+                ),
                 "bg_eq_fg_cos_drop_ci95": [_r4(bg_cos_eq_lo), _r4(bg_cos_eq_hi)],
                 "bg_eq_fg_seed_sd": round(float(np.std([np.mean(c[ok]) for c in cos_eq_list])), 5) if n_exact > 0 else None,
                 "fg_minus_bg_eq_cos": _r4(diff_cos["mean_diff"]),
@@ -788,6 +800,10 @@ def run_one_model_i1_i2(
                 c_row["fg_minus_bg_eq_kl"] = _r4(diff_kl["mean_diff"])
                 c_row["fg_minus_bg_eq_kl_ci95"] = [_r4(diff_kl["ci95_low"]), _r4(diff_kl["ci95_high"])]
             i2_fg_bg_contrasts.append(c_row)
+            if i2_layer == last_block and mode == "mean_v":
+                per_image_store["i2_l_last_meanv_fg_cos"] = np.asarray(fg_d["cos_drop"], dtype=np.float32)
+                per_image_store["i2_l_last_meanv_bg_eq_cos"] = np.asarray(cos_eq, dtype=np.float32)
+                per_image_store["i2_l_last_meanv_exact_mask"] = np.asarray(ok, dtype=bool)
             print(
                 f"  I2 l={i2_layer:2d} FG vs BG_eq_FG ({mode:<6s}, n_eq={n_exact}/{n_img}) | "
                 f"1-cos: FG={c_row['fg_cos_drop']:.4f} vs BG_eq={c_row['bg_eq_fg_cos_drop']:.4f} "
@@ -825,6 +841,8 @@ def run_one_model_i1_i2(
         "total_sec": round(total_sec, 2),
     }
     (out_dir / "models").mkdir(parents=True, exist_ok=True)
+    (out_dir / "per_image").mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_dir / "per_image" / f"{model_id}.npz", **per_image_store)
     tmp = out_dir / "models" / f"{model_id}.json.tmp"
     tmp.write_text(json.dumps(res_obj, indent=2))
     os.replace(tmp, out_dir / "models" / f"{model_id}.json")
@@ -960,7 +978,7 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_ids = list(PILOT8_SPECS.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
+    model_ids = resolve_model_ids(args.models)
     l_int_sweep = tuple(int(x.strip()) for x in args.l_int_sweep.split(",") if x.strip())
     i2_layers = tuple(int(x.strip()) for x in args.i2_layers.split(",") if x.strip()) if args.i2_layers.strip() else None
     seeds = tuple(int(x.strip()) for x in args.seeds.split(",") if x.strip())

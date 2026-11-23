@@ -225,6 +225,72 @@ def detect_shortcut_tokens(
     }
 
 
+# --------------------------------------------------------------------------- External Zero-Tuning Baselines: LOST & TokenCut (§7.2)
+def lost_map_from_keys(k_concat: np.ndarray, *, k_patches: int = 100) -> np.ndarray:
+    """Exact LOST patch saliency from concatenated keys (Siméoni et al., BMVC 2021; zero labels/box tuning).
+
+    1. L2-normalize patch keys, compute cosine similarity A = Xn @ Xn.T.
+    2. Seed p* = argmin_i sum_j 1[A_ij > 0] (lowest positive-correlation degree).
+    3. Seed expansion S = {q in top-k lowest-degree patches : A[p*, q] > 0} (always includes p*).
+    4. Saliency map s_i = max(0, sum_{q in S} A[i, q]).
+    """
+    X = np.asarray(k_concat, dtype=np.float64)
+    N = X.shape[0]
+    Xn = X / np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-12)
+    A = Xn @ Xn.T  # (N, N)
+    deg = (A > 0.0).sum(axis=1)
+    order = np.argsort(deg, kind="mergesort")
+    seed_idx = int(order[0])
+    k_eff = min(int(k_patches), N)
+    cand = order[:k_eff]
+    S = cand[A[seed_idx, cand] > 0.0]
+    if S.size == 0:
+        S = np.array([seed_idx], dtype=np.int64)
+    score = A[:, S].sum(axis=1)
+    return np.clip(score, 0.0, None)
+
+
+def tokencut_map_from_keys(
+    k_concat: np.ndarray,
+    grid: tuple[int, int],
+    *,
+    tau: float = 0.2,
+    eps: float = 1e-5,
+) -> np.ndarray:
+    """Exact TokenCut Normalized Cut Fiedler saliency from patch keys (Wang et al., CVPR 2022; zero box tuning).
+
+    1. Cosine affinity W_ij = 1 if cos(k_i, k_j) > tau else eps (diagonal = 1).
+    2. Solve symmetric normalized Laplacian L_sym = I - D^{-1/2} W D^{-1/2}; Fiedler vector y = D^{-1/2} v_2.
+    3. Unsupervised foreground sign orientation: align positive side with argmax(|y|) and apply the official
+       TokenCut 4-corner border flip if >= 3 image corners fall on the positive side.
+    """
+    X = np.asarray(k_concat, dtype=np.float64)
+    N = X.shape[0]
+    Xn = X / np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-12)
+    S = Xn @ Xn.T
+    W = np.where(S > float(tau), 1.0, float(eps))
+    np.fill_diagonal(W, 1.0)
+    d = W.sum(axis=1)
+    d_inv_sqrt = 1.0 / np.sqrt(np.maximum(d, 1e-12))
+    L_sym = np.eye(N, dtype=np.float64) - (d_inv_sqrt[:, None] * W) * d_inv_sqrt[None, :]
+    L_sym = 0.5 * (L_sym + L_sym.T)
+    _, evecs = np.linalg.eigh(L_sym)
+    y = d_inv_sqrt * evecs[:, 1]
+
+    # Foreground sign orientation (official TokenCut rule)
+    y_mean = float(y.mean())
+    if y[int(np.argmax(np.abs(y)))] < y_mean:
+        y = -y
+        y_mean = -y_mean
+
+    gh, gw = int(grid[0]), int(grid[1])
+    if gh * gw == N and gh >= 2 and gw >= 2:
+        corners = [0, gw - 1, (gh - 1) * gw, gh * gw - 1]
+        if sum(1 for c in corners if y[c] > y_mean) >= 3:
+            y = -y
+    return y
+
+
 # --------------------------------------------------------------------------- Upsampling & full readout (§7.1 Steps 6-8)
 def upsample_patch_map(patch_map_1d: np.ndarray, grid: tuple[int, int], target_size: int) -> np.ndarray:
     """Reshape (N,) patch map to (G_h, G_w), bilinear upsample to (target_size, target_size), min-max normalize."""
@@ -314,12 +380,18 @@ def compute_ralr_maps_single_image(
 
     raw_adaptive = raw_ralr_high if branch == "HIGH" else raw_ralr_low
 
+    # External zero-box-tuning graph baselines at matched layer l* (§7.2: LOST & TokenCut)
+    raw_lost_lstar = lost_map_from_keys(k_concat)
+    raw_tokencut_lstar = tokencut_map_from_keys(k_concat, grid)
+
     maps = {
         "cls_last": upsample_patch_map(raw_cls_last, grid, target_size),
         "cls_l_star": upsample_patch_map(raw_cls_lstar, grid, target_size),
         "cls_l_star_clip98": upsample_patch_map(raw_cls_lstar_clip98, grid, target_size),
         "cls_l_star_no_out": upsample_patch_map(raw_cls_lstar_no_out, grid, target_size),
         "cls_l_star_w": upsample_patch_map(raw_cls_lstar_w, grid, target_size),
+        "lost_l_star": upsample_patch_map(raw_lost_lstar, grid, target_size),
+        "tokencut_l_star": upsample_patch_map(raw_tokencut_lstar, grid, target_size),
         "ralr_high": upsample_patch_map(raw_ralr_high, grid, target_size),
         "ralr_low": upsample_patch_map(raw_ralr_low, grid, target_size),
         "ralr_high_cleaned": upsample_patch_map(raw_ralr_high_cleaned, grid, target_size),

@@ -18,16 +18,34 @@ from interventions import forward_ops as fops
 from interventions import i1_i2 as I12
 from scripts import check_in1k_feature_sanity as sanity_chk
 from scripts import run_pilot_interventions_i1_i2 as runner_i12
-from scripts.run_pilot_m1_m2 import PILOT8_SPECS, load_pilot_model
+from scripts.run_pilot_m1_m2 import (
+    CLASSIFIER_MODEL_IDS,
+    EXPANSION4_SPECS,
+    PILOT8_SPECS,
+    ZOO12_SPECS,
+    load_pilot_model,
+    resolve_model_ids,
+)
 
 
-@pytest.mark.parametrize("model_id", list(PILOT8_SPECS.keys()))
+def test_resolve_model_ids_groups():
+    assert len(resolve_model_ids("all")) == 8
+    assert len(resolve_model_ids("expansion4")) == 4
+    assert len(resolve_model_ids("zoo12")) == 12
+    assert set(resolve_model_ids("all")) | set(resolve_model_ids("expansion4")) == set(resolve_model_ids("zoo12"))
+    assert resolve_model_ids("metaclip_vitb16,dinov2_vits14_reg") == ["metaclip_vitb16", "dinov2_vits14_reg"]
+    with pytest.raises(ValueError):
+        resolve_model_ids("nonexistent_model_id")
+
+
+@pytest.mark.parametrize("model_id", list(ZOO12_SPECS.keys()))
 def test_clean_block_forward_matches_native_model_exact(model_id: str, tmp_path: Path):
-    """Critical correctness test: zero-edit intervened forward must reproduce native model output to <1e-4."""
+    """Critical correctness test: zero-edit intervened forward must reproduce native model output to <1e-4 (all 12 models)."""
     torch.manual_seed(0)
     dev = torch.device("cpu")
+    keep_head = model_id in CLASSIFIER_MODEL_IDS
     adapter, model, _, _, target_size = load_pilot_model(
-        model_id, dev, tmp_path, smoke_random=True, keep_head=(model_id == "deit3_small_patch16_224")
+        model_id, dev, tmp_path, smoke_random=True, keep_head=keep_head
     )
     x = torch.randn(2, 3, target_size, target_size)
 
@@ -45,10 +63,15 @@ def test_clean_block_forward_matches_native_model_exact(model_id: str, tmp_path:
 
     max_emb_diff = float((out["emb"] - ref_emb).abs().max().item())
     assert max_emb_diff < 1e-4, f"[{model_id}] clean embedding drift {max_emb_diff}"
-    if ref_logits is not None:
-        assert out["logits"] is not None
+    if keep_head:
+        assert ref_logits is not None and out["logits"] is not None
+        assert tuple(out["logits"].shape) == (2, 1000)
         max_log_diff = float((out["logits"] - ref_logits).abs().max().item())
         assert max_log_diff < 1e-4, f"[{model_id}] clean logits drift {max_log_diff}"
+    else:
+        assert out["logits"] is None, f"[{model_id}] expected logits=None when keep_head=False"
+    if model_id == "dinov2_vits14_reg":
+        assert len(layout["register_idx"]) == 4
 
 
 def test_i1_and_i2_preserve_patch_stream_exactly(tmp_path: Path):

@@ -47,7 +47,9 @@ from scripts.run_pilot_interventions_i1_i2 import (
     _load_imagenet_labels_and_gallery,
 )
 from scripts.run_pilot_m1_m2 import (
+    CLASSIFIER_MODEL_IDS,
     PILOT8_SPECS,
+    resolve_model_ids,
     _file_sha256_16,
     _git_sha,
     _load_registry_meta,
@@ -126,7 +128,7 @@ def run_one_model_i5(
     t0 = time.perf_counter()
     adapter, model, mean, std, target_size = load_pilot_model(
         model_id, device, weights_cache, smoke_random=smoke_random,
-        keep_head=(model_id == "deit3_small_patch16_224"),
+        keep_head=(model_id in CLASSIFIER_MODEL_IDS),
     )
     n_blocks = adapter.n_blocks(model)
     eff_lr = tuple(sorted(l for l in l_r_sweep if 0 <= l < n_blocks))
@@ -431,7 +433,7 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_ids = list(PILOT8_SPECS.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
+    model_ids = resolve_model_ids(args.models)
     l_r_sweep = tuple(int(x.strip()) for x in args.l_r_sweep.split(",") if x.strip())
     modes = tuple(x.strip() for x in args.modes.split(",") if x.strip())
     seeds = tuple(int(x.strip()) for x in args.seeds.split(",") if x.strip())

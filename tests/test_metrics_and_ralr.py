@@ -146,6 +146,8 @@ def test_ralr_step7_shortcut_detection_and_knockout():
         k_patch_lstar=k_patch, branch="LOW", grid=(14, 14), target_size=56, seed=0,
     )
     assert "cls_l_star_clip98" in maps_hi and "cls_l_star_no_out" in maps_hi
+    assert "lost_l_star" in maps_hi and "tokencut_l_star" in maps_hi
+    assert "lost_l_star" in ralr_runner.METHODS_ORDER and "tokencut_l_star" in ralr_runner.METHODS_ORDER
     assert np.allclose(maps_hi["ralr_adaptive"], maps_hi["ralr_high"])
     assert np.allclose(maps_lo["ralr_adaptive"], maps_lo["ralr_low"])
     assert not np.allclose(maps_lo["ralr_low"], maps_lo["cls_l_star_w"])
@@ -153,6 +155,34 @@ def test_ralr_step7_shortcut_detection_and_knockout():
         assert m.shape == (56, 56), f"{mname} wrong shape {m.shape}"
         assert m.min() >= -1e-9 and m.max() <= 1.0 + 1e-9
     assert diag["n_shortcut"] >= 2
+
+
+def test_lost_and_tokencut_recover_synthetic_fg_object():
+    """Failing-if-broken test: LOST and TokenCut must recover a 4x4 central FG object on a 14x14 grid."""
+    rng = np.random.default_rng(42)
+    gh, gw = 14, 14
+    N, D = gh * gw, 64
+    gt = np.zeros((gh, gw), dtype=bool)
+    gt[5:9, 5:9] = True  # 16 FG patches vs 180 BG patches (all 4 corners are BG)
+    fg_flat = gt.reshape(-1)
+
+    # Distinct orthogonal clusters for BG (around e0) and FG (around e1)
+    k_concat = 0.05 * rng.standard_normal((N, D))
+    k_concat[~fg_flat, 0] += 3.0
+    k_concat[fg_flat, 1] += 3.0
+
+    lost_1d = R.lost_map_from_keys(k_concat, k_patches=50)
+    tc_1d = R.tokencut_map_from_keys(k_concat, (gh, gw), tau=0.2)
+
+    assert lost_1d.shape == (N,) and tc_1d.shape == (N,)
+    assert M.box_auc(lost_1d.reshape(gh, gw), gt) > 0.99, "LOST failed to localize synthetic FG object"
+    assert M.box_auc(tc_1d.reshape(gh, gw), gt) > 0.99, "TokenCut failed to localize synthetic FG object"
+    # Verify TokenCut sign orientation puts FG > BG (not inverted!)
+    assert tc_1d[fg_flat].mean() > tc_1d[~fg_flat].mean()
+    # Verify upsampled maps are normalized in [0, 1]
+    for arr in (lost_1d, tc_1d):
+        up = R.upsample_patch_map(arr, (gh, gw), 56)
+        assert up.shape == (56, 56) and up.min() >= -1e-9 and up.max() <= 1.0 + 1e-9
 
 
 # --------------------------------------------------------------------------- ImageNet XML + RALR CLI smoke (§8)

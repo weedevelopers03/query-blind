@@ -61,6 +61,7 @@ from measures._common import (
 from ralr import readout as R
 from scripts.run_pilot_m1_m2 import (
     PILOT8_SPECS,
+    resolve_model_ids,
     _file_sha256_16,
     _git_sha,
     bootstrap_ci,
@@ -75,6 +76,8 @@ METHODS_ORDER = (
     "cls_l_star_clip98",
     "cls_l_star_no_out",
     "cls_l_star_w",
+    "lost_l_star",
+    "tokencut_l_star",
     "ralr_high",
     "ralr_low",
     "ralr_high_cleaned",
@@ -470,6 +473,14 @@ def run_one_model_ralr(
         "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_adaptive"], per_image_box_auc["cls_l_star_no_out"], seed=seed),
         "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_adaptive"], per_image_otsu_hit["cls_l_star_no_out"], seed=seed),
     }
+    paired_diffs["ralr_adaptive_minus_lost_l_star"] = {
+        "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_adaptive"], per_image_box_auc["lost_l_star"], seed=seed),
+        "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_adaptive"], per_image_otsu_hit["lost_l_star"], seed=seed),
+    }
+    paired_diffs["ralr_adaptive_minus_tokencut_l_star"] = {
+        "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_adaptive"], per_image_box_auc["tokencut_l_star"], seed=seed),
+        "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_adaptive"], per_image_otsu_hit["tokencut_l_star"], seed=seed),
+    }
     paired_diffs["ralr_high_cleaned_minus_ralr_high"] = {
         "box_auc": paired_bootstrap_diff_ci(per_image_box_auc["ralr_high_cleaned"], per_image_box_auc["ralr_high"], seed=seed),
         "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit["ralr_high_cleaned"], per_image_otsu_hit["ralr_high"], seed=seed),
@@ -584,15 +595,24 @@ def write_ralr_report(results: dict[str, dict], dataset: str, out_dir: Path) -> 
     p_sign_otsu_2 = float(binomtest(wins_otsu_lstar, n_models, 0.5, alternative="two-sided").pvalue) if n_models > 0 else float("nan")
     wins_otsu_clip98 = sum(1 for r in results.values() if r["paired_diffs"]["ralr_adaptive_minus_cls_l_star_clip98"]["corloc_otsu"]["mean_diff"] > 0)
     wins_otsu_no_out = sum(1 for r in results.values() if r["paired_diffs"]["ralr_adaptive_minus_cls_l_star_no_out"]["corloc_otsu"]["mean_diff"] > 0)
-    p_clip98 = float(binomtest(wins_otsu_clip98, n_models, 0.5, alternative="greater").pvalue) if n_models > 0 else float("nan")
-    p_no_out = float(binomtest(wins_otsu_no_out, n_models, 0.5, alternative="greater").pvalue) if n_models > 0 else float("nan")
+    wins_auc_lost = sum(1 for r in results.values() if "ralr_adaptive_minus_lost_l_star" in r["paired_diffs"] and r["paired_diffs"]["ralr_adaptive_minus_lost_l_star"]["box_auc"]["mean_diff"] > 0)
+    wins_auc_tc = sum(1 for r in results.values() if "ralr_adaptive_minus_tokencut_l_star" in r["paired_diffs"] and r["paired_diffs"]["ralr_adaptive_minus_tokencut_l_star"]["box_auc"]["mean_diff"] > 0)
+    wins_otsu_lost = sum(1 for r in results.values() if "ralr_adaptive_minus_lost_l_star" in r["paired_diffs"] and r["paired_diffs"]["ralr_adaptive_minus_lost_l_star"]["corloc_otsu"]["mean_diff"] > 0)
+    wins_otsu_tc = sum(1 for r in results.values() if "ralr_adaptive_minus_tokencut_l_star" in r["paired_diffs"] and r["paired_diffs"]["ralr_adaptive_minus_tokencut_l_star"]["corloc_otsu"]["mean_diff"] > 0)
+    p_clip98 = float(binomtest(wins_otsu_clip98, n_models, 0.5, alternative="two-sided").pvalue) if n_models > 0 else float("nan")
+    p_no_out = float(binomtest(wins_otsu_no_out, n_models, 0.5, alternative="two-sided").pvalue) if n_models > 0 else float("nan")
+    # Non-degenerate primary H5 denominator (excludes Fix-2 degenerate MAE per OSF §3 & §5)
+    non_degen = [r for m, r in results.items() if m != "mae_vitb16"]
+    n_nd = len(non_degen)
+    wins_auc_nd = sum(1 for r in non_degen if r["paired_diffs"]["ralr_adaptive_minus_cls_l_star"]["box_auc"]["mean_diff"] > 0)
+    p_auc_nd_2 = float(binomtest(wins_auc_nd, n_nd, 0.5, alternative="two-sided").pvalue) if n_nd > 0 else float("nan")
 
-    lines.append("\n## 3. Gate G3 Preview (Sign Test Across Backbones vs `[CLS]@l*` & Spike-Clipped Controls, Guide §11.2)\n")
-    lines.append(f"- **RALR beats `[CLS]@l*` on box-AUC:** `{wins_auc_lstar}/{n_models}` (one-sided `p = {p_sign_auc:.4f}`, two-sided `p = {p_sign_auc_2:.4f}`)")
-    lines.append(f"- **RALR beats `cls_last` on box-AUC:** `{wins_auc_last}/{n_models}`")
-    lines.append(f"- **RALR beats `[CLS]@l*` on Otsu CorLoc@0.5:** `{wins_otsu_lstar}/{n_models}` (one-sided `p = {p_sign_otsu:.4f}`, two-sided `p = {p_sign_otsu_2:.4f}`)")
-    lines.append(f"- **RALR beats `cls_l_star_clip98` (top-2% winsorized) on Otsu CorLoc@0.5:** `{wins_otsu_clip98}/{n_models}` (one-sided `p = {p_clip98:.4f}`)")
-    lines.append(f"- **RALR beats `cls_l_star_no_out` (OUT_norm masked) on Otsu CorLoc@0.5:** `{wins_otsu_no_out}/{n_models}` (one-sided `p = {p_no_out:.4f}`)")
+    lines.append("\n## 3. Gate G3 Summary (Two-Sided Exact Sign Tests vs `[CLS]@l*`, Spike Controls, `LOST` & `TokenCut`, Guide §11.2)\n")
+    lines.append(f"- **Primary H5 (`box-AUC` vs `[CLS]@l*`, excl. degenerate MAE):** `{wins_auc_nd}/{n_nd}` (two-sided `p = {p_auc_nd_2:.4f}`)")
+    lines.append(f"- **Sensitivity (`box-AUC` vs `[CLS]@l*`, all models):** `{wins_auc_lstar}/{n_models}` (two-sided `p = {p_sign_auc_2:.4f}`, one-sided `p = {p_sign_auc:.4f}`)")
+    lines.append(f"- **RALR beats `lost_l_star` / `tokencut_l_star` on `box-AUC`:** `{wins_auc_lost}/{n_models}` vs LOST | `{wins_auc_tc}/{n_models}` vs TokenCut")
+    lines.append(f"- **Secondary (`Otsu CorLoc@0.5` vs `[CLS]@l*`):** `{wins_otsu_lstar}/{n_models}` (two-sided `p = {p_sign_otsu_2:.4f}`, one-sided `p = {p_sign_otsu:.4f}`)")
+    lines.append(f"- **Secondary (`Otsu` vs `clip98` / `no_out` / `LOST` / `TokenCut`):** `{wins_otsu_clip98}/{n_models}` (`p={p_clip98:.4f}`) | `{wins_otsu_no_out}/{n_models}` (`p={p_no_out:.4f}`) | `{wins_otsu_lost}/{n_models}` vs LOST | `{wins_otsu_tc}/{n_models}` vs TokenCut")
 
     md_text = "\n".join(lines) + "\n"
     (out_dir / "summary_ralr.md").write_text(md_text)
@@ -641,10 +661,7 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_ids = list(PILOT8_SPECS.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
-    for mid in model_ids:
-        if mid not in PILOT8_SPECS:
-            raise ValueError(f"Unknown pilot model {mid!r}")
+    model_ids = resolve_model_ids(args.models)
 
     items = load_eval_samples(args)
     print(f"Loaded {len(items)} {args.dataset} images for RALR on device={device}", flush=True)

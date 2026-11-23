@@ -51,6 +51,8 @@ from measures import routing
 from measures._common import get_output_proj_and_layerscale, write_records
 from scripts.run_pilot_m1_m2 import (
     PILOT8_SPECS,
+    ZOO12_SPECS,
+    resolve_model_ids,
     _file_sha256_16,
     _git_sha,
     _load_registry_meta,
@@ -466,10 +468,7 @@ def main(argv=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_ids = list(PILOT8_SPECS.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
-    for mid in model_ids:
-        if mid not in PILOT8_SPECS:
-            raise ValueError(f"Unknown pilot model {mid!r}")
+    model_ids = resolve_model_ids(args.models)
 
     samples = load_waterbirds_test_split(args.waterbirds_dir, args.cub_seg_dir, split_code=2, limit=args.limit)
     n_cong = sum(s.congruent for s in samples)

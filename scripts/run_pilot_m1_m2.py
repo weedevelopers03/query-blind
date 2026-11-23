@@ -110,6 +110,41 @@ PILOT8_SPECS = {
     ),
 }
 
+# Pre-registered 4 unseen expansion checkpoints (OSF §1, configs/checkpoints.yaml commit 8bfc63b)
+EXPANSION4_SPECS = {
+    "dinov2_vits14": dict(
+        family="timm_vit", arch="vit_small_patch14_dinov2.lvd142m", patch_size=14, loader="timm",
+    ),
+    "dinov2_vits14_reg": dict(
+        family="timm_vit", arch="vit_small_patch14_reg4_dinov2.lvd142m", patch_size=14, loader="timm",
+    ),
+    "deit3_small_patch16_224_in21k": dict(
+        family="timm_vit", arch="deit3_small_patch16_224.fb_in22k_ft_in1k", patch_size=16, loader="timm",
+    ),
+    "metaclip_vitb16": dict(
+        family="timm_vit", arch="vit_base_patch16_clip_224.metaclip_2pt5b", patch_size=16, loader="timm",
+    ),
+}
+
+ZOO12_SPECS = {**PILOT8_SPECS, **EXPANSION4_SPECS}
+CLASSIFIER_MODEL_IDS = frozenset({"deit3_small_patch16_224", "deit3_small_patch16_224_in21k"})
+
+
+def resolve_model_ids(models_arg: str) -> list[str]:
+    """Resolve --models selector ('all' -> Pilot-8, 'expansion4' -> 4 unseen, 'zoo12' -> all 12, or comma list)."""
+    key = models_arg.strip()
+    if key == "all":
+        return list(PILOT8_SPECS.keys())
+    if key == "expansion4":
+        return list(EXPANSION4_SPECS.keys())
+    if key == "zoo12":
+        return list(ZOO12_SPECS.keys())
+    mids = [m.strip() for m in key.split(",") if m.strip()]
+    unknown = [m for m in mids if m not in ZOO12_SPECS]
+    if unknown:
+        raise ValueError(f"Unknown model_id(s): {unknown}. Available: {list(ZOO12_SPECS.keys())}")
+    return mids
+
 
 # --------------------------------------------------------------------------- Checkpoint loading
 def _download_if_missing(url: str, dest: Path) -> Path:
@@ -165,7 +200,7 @@ def load_pilot_model(
     """Load one pilot-8 model + adapter + exact per-model normalization (mean, std) + target_size."""
     import timm
 
-    spec = PILOT8_SPECS[model_id]
+    spec = ZOO12_SPECS[model_id]
     target_size = target_size_for_patch_size(spec["patch_size"])
     loader = spec["loader"]
 
@@ -900,10 +935,7 @@ def main(argv=None):
     n_images = args.n_images if args.n_images is not None else (500 if args.dataset == "cub" else 1000)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model_ids = list(PILOT8_SPECS.keys()) if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
-    for mid in model_ids:
-        if mid not in PILOT8_SPECS:
-            raise ValueError(f"Unknown pilot model {mid!r}; choices: {list(PILOT8_SPECS.keys())}")
+    model_ids = resolve_model_ids(args.models)
 
     if args.dataset == "cub":
         if not args.cub_dir:
