@@ -105,15 +105,24 @@ def main() -> None:
         ax.text(r["qii"] + 0.008, i - h / 2, f"{r['qii']:.3f}", va="center", fontsize=7.5, fontweight="bold", color="#0F172A")
         ax.text(r["auc"] + 0.012, i + h / 2, f"{r['auc']:.3f}", va="center", fontsize=7.3, color="#334155")
 
-    ax.axvline(0.50, color="#94A3B8", ls=":", lw=1.1)
-    ax.text(0.506, 11.45, "RALR HIGH\nthreshold (0.50)", fontsize=7.2, color="#475569", va="bottom")
+    ax.axvline(0.50, color="#64748B", ls=":", lw=1.1)
+    ax.text(0.503, -0.62, "RALR HIGH (0.50)", fontsize=7.0, color="#475569", va="bottom", ha="left")
+
+    # Subtle family dividers (SSL 7 | Label+Text 4 | MAE 1)
+    ax.axhline(6.5, color="#475569", ls="--", lw=0.9, alpha=0.65)
+    ax.axhline(10.5, color="#94A3B8", ls=":", lw=0.8, alpha=0.65)
 
     ax.set_yticks(y)
     ax.set_yticklabels([r["label"] for r in records], fontsize=8.3)
     ax.invert_yaxis()
+    ax.set_ylim(11.65, -0.85)
     ax.set_xlim(0.45, 1.08)
     ax.set_xlabel("Score at Unlabelled $l^*$ (Dark bar = QII$_{S4}$, Light bar = True-Query box-AUC)")
-    ax.set_title("A. Universal Query-Blindness vs. Divergent Map Quality")
+    ax.set_title(
+        "A. Universal Query-Blindness vs. Divergent Map Quality\n"
+        "SSL (7) vs. Label+Text (4): QII$_{S4}$ $U=6$ ($p=0.164$, n.s.)  |  box-AUC $U=28/28$ ($p=0.0061$, zero overlap)",
+        fontsize=8.6,
+    )
 
     # Shared figure-level legend at bottom so Panel A bars are 100% unobstructed
     handles = [
