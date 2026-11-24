@@ -137,12 +137,18 @@ def extract_shard(adapter, model, images: torch.Tensor, model_id: str, dataset: 
     np.save(shard_dir / "norms.npy", np.stack([np.stack([pad_tokens(z, 0) for z in image]) for image in NORMS]))
     np.save(shard_dir / "cls.npy", np.stack(CLS))
     np.save(shard_dir / "pooled.npy", np.stack(POOLED))
+    try:
+        from adapters.pos_embed_interp import interpolation_path
+        pe_interp = interpolation_path(model)
+    except Exception:
+        pe_interp = {"path": "not_applicable"}
     meta = dict(
         model_id=model_id, dataset=dataset, split=split,
         n_images=I, n_blocks=n_blocks, layers=layers,
         image_ids=list(image_ids) if image_ids is not None else None,
         grid=list(layouts[0]["grid"]) if len(set(tuple(v["grid"]) for v in layouts)) == 1 else None,
         grids=[list(v["grid"]) for v in layouts], resolutions=resolutions, token_counts=token_counts,
+        pos_embed_interpolation=pe_interp,
         code_git_sha=_git_sha(), written_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     )
     (shard_dir / "meta.json").write_text(json.dumps(meta, indent=2))

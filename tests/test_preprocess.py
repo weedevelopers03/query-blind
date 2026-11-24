@@ -18,6 +18,8 @@ from eval.preprocess import (
     box_to_pixel_mask,
     clip_box_to_frame,
     cub_box_1based_to_0based,
+    load_cub_pilot_split,
+    load_imagenet_val_pilot_split,
     patch_fg_mask,
     save_box_overlays,
     transform_box_resize_center_crop,
@@ -118,3 +120,56 @@ def test_patch_fg_mask_50pct_rule_and_overlay_grid(tmp_path):
     out = save_box_overlays(samples, 224, tmp_path / "overlays.png", n_images=4)
     assert out.exists()
     assert box_to_pixel_mask((10, 10, 20, 20), 224).sum() == 100
+
+
+def test_4_image_id_keying_ignores_directory_sort_order(tmp_path):
+    """Review (2) & (3): verify explicit image-ID pairing replaces positional 'sorted filenames match'."""
+    # --- ImageNet-1K explicit stem lookup (with distractor images + unsorted split order) ---
+    img_dir = tmp_path / "in1k_val"
+    xml_dir = tmp_path / "in1k_xml"
+    img_dir.mkdir()
+    xml_dir.mkdir()
+
+    # Distractor file that sorts BEFORE the split stems — would shift every positional index!
+    Image.new("RGB", (100, 100), (0, 0, 0)).save(img_dir / "ILSVRC2012_val_00000001.JPEG")
+
+    specs = [
+        ("ILSVRC2012_val_00000050", (10, 20, 60, 80)),
+        ("ILSVRC2012_val_00000012", (5, 15, 45, 55)),
+        ("ILSVRC2012_val_00000099", (30, 40, 90, 95)),
+    ]
+    for stem, (x1, y1, x2, y2) in specs:
+        Image.new("RGB", (100, 100), (128, 128, 128)).save(img_dir / f"{stem}.JPEG")
+        (xml_dir / f"{stem}.xml").write_text(
+            f"<annotation><size><width>100</width><height>100</height></size>"
+            f"<object><bndbox><xmin>{x1}</xmin><ymin>{y1}</ymin><xmax>{x2}</xmax><ymax>{y2}</ymax></bndbox></object></annotation>"
+        )
+
+    split_file = tmp_path / "split.txt"
+    split_file.write_text("\n".join(s for s, _ in specs) + "\n")
+    loaded = load_imagenet_val_pilot_split(img_dir, xml_dir, split_file=split_file)
+    assert [(s.image_id, s.boxes_0based[0]) for s in loaded] == [(st, tuple(float(v) for v in b)) for st, b in specs]
+
+    # Missing split ID must raise FileNotFoundError rather than silently aligning another image
+    bad_split = tmp_path / "bad_split.txt"
+    bad_split.write_text("ILSVRC2012_val_00000050\nILSVRC2012_val_99999999\n")
+    with pytest.raises(FileNotFoundError):
+        load_imagenet_val_pilot_split(img_dir, xml_dir, split_file=bad_split)
+
+    # --- CUB-200-2011 explicit cub_id lookup (non-monotonic IDs + out-of-order files) ---
+    cub_root = tmp_path / "CUB_200_2011"
+    (cub_root / "images" / "cls").mkdir(parents=True)
+    cub_specs = [(42, "cls/z_img.jpg", (11.0, 21.0, 30.0, 40.0)), (7, "cls/a_img.jpg", (5.0, 6.0, 20.0, 25.0))]
+    for cid, rel, _ in cub_specs:
+        Image.new("RGB", (100, 100), (50, 50, 50)).save(cub_root / "images" / rel)
+    (cub_root / "images.txt").write_text("\n".join(f"{cid} {rel}" for cid, rel, _ in cub_specs) + "\n")
+    (cub_root / "train_test_split.txt").write_text("\n".join(f"{cid} 0" for cid, _, _ in cub_specs) + "\n")
+    (cub_root / "bounding_boxes.txt").write_text(
+        "\n".join(f"{cid} {b[0]} {b[1]} {b[2]} {b[3]}" for cid, _, b in cub_specs) + "\n"
+    )
+    cub_split = tmp_path / "cub_split.txt"
+    cub_split.write_text("42\n7\n")
+    cub_loaded = load_cub_pilot_split(cub_root, split_file=cub_split)
+    assert [s.cub_id for s in cub_loaded] == [42, 7]
+    assert cub_loaded[0].box_0based == (10.0, 20.0, 40.0, 60.0)
+    assert cub_loaded[1].box_0based == (4.0, 5.0, 24.0, 30.0)

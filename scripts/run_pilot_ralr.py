@@ -49,6 +49,7 @@ from eval.preprocess import (
     load_cub_pilot_split,
     load_imagenet_val_pilot_split,
     save_imagenet_box_overlays,
+    transform_mask_resize_center_crop,
 )
 from extract.cache import last_third_blocks
 from measures import keydom, qii, routing
@@ -86,16 +87,25 @@ METHODS_ORDER = (
 
 
 # --------------------------------------------------------------------------- Unified dataset wrapper
+def _mask_to_tight_boxes(mask_bool: np.ndarray) -> list[tuple[float, float, float, float]]:
+    """Derive tight 0-based [x1, y1, x2, y2) bounding box(es) from a transformed pixel mask (for OpenImages30k)."""
+    ys, xs = np.nonzero(mask_bool)
+    if ys.size == 0:
+        return [(0.0, 0.0, 0.0, 0.0)]
+    return [(float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1))]
+
+
 def load_eval_samples(args):
-    """Return list of dicts with keys: id, image_path, kind ('cub'|'imagenet'), raw_sample."""
+    """Return list of dicts with keys: id, image_path, kind ('cub'|'imagenet'|'openimages'), raw."""
     if args.dataset == "cub":
         if not args.cub_dir:
             raise ValueError("--cub_dir is required for --dataset cub")
+        split_f = None if (args.split_file and args.split_file.lower() == "none") else args.split_file
         samples = load_cub_pilot_split(
             args.cub_dir,
-            n_images=args.limit or 500,
+            n_images=args.limit or (5794 if split_f is None else 500),
             seed=args.seed,
-            split_file=args.split_file,
+            split_file=split_f,
         )
         return [{"id": str(s.cub_id), "image_path": s.image_path, "kind": "cub", "raw": s} for s in samples]
 
@@ -114,6 +124,27 @@ def load_eval_samples(args):
         )
         return [{"id": s.image_id, "image_path": s.image_path, "kind": "imagenet", "raw": s} for s in samples]
 
+    if args.dataset == "openimages":
+        if not args.openimages_img_dir or not args.openimages_mask_dir:
+            raise ValueError("--openimages_img_dir and --openimages_mask_dir are required for --dataset openimages")
+        img_root = Path(args.openimages_img_dir)
+        msk_root = Path(args.openimages_mask_dir)
+        img_exts = {".jpg", ".jpeg", ".png"}
+        stem_to_img = {p.stem: p for p in sorted(img_root.rglob("*")) if p.is_file() and p.suffix.lower() in img_exts}
+        stem_to_msk = {p.stem: p for p in sorted(msk_root.rglob("*.png")) if p.is_file()}
+        matched = sorted(s for s in stem_to_img if s in stem_to_msk)
+        if not matched:
+            raise FileNotFoundError(f"No matching image/mask stems found under {img_root} and {msk_root}")
+        split_f = args.split_file
+        if split_f and split_f.lower() != "none" and Path(split_f).exists() and "cub_pilot_500" not in split_f:
+            wanted = [ln.strip() for ln in Path(split_f).read_text().splitlines() if ln.strip()]
+            matched = [s for s in wanted if s in stem_to_img and s in stem_to_msk]
+        if args.limit is not None and args.limit < len(matched):
+            rng = np.random.default_rng(int(args.seed))
+            idx = np.sort(rng.choice(len(matched), size=int(args.limit), replace=False))
+            matched = [matched[int(i)] for i in idx]
+        return [{"id": s, "image_path": stem_to_img[s], "mask_path": stem_to_msk[s], "kind": "openimages", "raw": None} for s in matched]
+
     raise ValueError(f"Unknown dataset {args.dataset!r}")
 
 
@@ -127,6 +158,11 @@ def precompute_gt_for_resolution(items: list[dict], target_size: int) -> tuple[l
             mask, tbox = get_transformed_gt_mask(it["raw"], ow, oh, target_size, prefer_seg=True)
             masks.append(mask.astype(bool))
             boxes_list.append([tbox])
+        elif it["kind"] == "openimages":
+            with Image.open(it["mask_path"]) as mp:
+                mask = transform_mask_resize_center_crop(mp, target_size).astype(bool)
+            masks.append(mask)
+            boxes_list.append(_mask_to_tight_boxes(mask))
         else:
             mask, tboxes = get_transformed_imagenet_gt_mask(it["raw"], ow, oh, target_size)
             masks.append(mask.astype(bool))
@@ -411,6 +447,7 @@ def run_one_model_ralr(
 
     method_results: dict[str, dict] = {}
     per_image_box_auc: dict[str, np.ndarray] = {}
+    per_image_pxap: dict[str, np.ndarray] = {}
     per_image_otsu_hit: dict[str, np.ndarray] = {}
 
     for m in METHODS_ORDER:
@@ -418,7 +455,10 @@ def run_one_model_ralr(
         aucs = np.array([M.box_auc(mlist[i], gt_masks[i]) for i in range(n_img)], dtype=np.float64)
         pxaps = np.array([M.pxap(mlist[i], gt_masks[i]) for i in range(n_img)], dtype=np.float64)
         pts = np.array([M.pointing_game(mlist[i], gt_masks[i]) for i in range(n_img)], dtype=np.float64)
-        otsu_boxes = [M.otsu_box(mlist[i])[0] for i in range(n_img)]
+        otsu_out = [M.otsu_box(mlist[i]) for i in range(n_img)]
+        otsu_boxes = [o[0] for o in otsu_out]
+        otsu_fg_fracs = np.array([float(o[1].mean()) for o in otsu_out], dtype=np.float64)
+        otsu_degen_rate = float(np.mean((otsu_fg_fracs < 0.02) | (otsu_fg_fracs > 0.80)))
         corloc_otsu, hits_otsu = M.corloc(otsu_boxes, gt_boxes_list, iou_thresh=0.5)
 
         # Murtaza-style fixed scalar threshold calibrated purely on unlabelled maps vs Otsu pseudo-boxes
@@ -436,13 +476,19 @@ def run_one_model_ralr(
         cc_m, cc_lo, cc_hi = bootstrap_ci(hits_cal, seed=seed)
 
         per_image_box_auc[m] = aucs
+        per_image_pxap[m] = pxaps
         per_image_otsu_hit[m] = hits_otsu
 
         method_results[m] = {
             "box_auc": {"mean": round(auc_m, 4), "ci95": [round(auc_lo, 4), round(auc_hi, 4)], "tunes_on_boxes": False},
             "pxap": {"mean": round(px_m, 4), "ci95": [round(px_lo, 4), round(px_hi, 4)], "tunes_on_boxes": False},
             "pointing": {"mean": round(pt_m, 4), "ci95": [round(pt_lo, 4), round(pt_hi, 4)], "tunes_on_boxes": False},
-            "corloc_otsu": {"mean": round(co_m, 4), "ci95": [round(co_lo, 4), round(co_hi, 4)], "tunes_on_boxes": False},
+            "corloc_otsu": {
+                "mean": round(co_m, 4), "ci95": [round(co_lo, 4), round(co_hi, 4)],
+                "mean_fg_frac": round(float(otsu_fg_fracs.mean()), 4),
+                "degen_frac_outside_002_080": round(otsu_degen_rate, 4),
+                "tunes_on_boxes": False,
+            },
             "corloc_cal_tau": {
                 "mean": round(cc_m, 4), "ci95": [round(cc_lo, 4), round(cc_hi, 4)],
                 "cal_tau": round(cal_tau, 4), "n_eval": int(n_img - eval_start), "tunes_on_boxes": False,
@@ -459,6 +505,7 @@ def run_one_model_ralr(
     for m in ("ralr_adaptive", "ralr_high", "ralr_low", "ralr_high_cleaned"):
         paired_diffs[f"{m}_minus_cls_l_star"] = {
             "box_auc": paired_bootstrap_diff_ci(per_image_box_auc[m], per_image_box_auc["cls_l_star"], seed=seed),
+            "pxap": paired_bootstrap_diff_ci(per_image_pxap[m], per_image_pxap["cls_l_star"], seed=seed),
             "corloc_otsu": paired_bootstrap_diff_ci(per_image_otsu_hit[m], per_image_otsu_hit["cls_l_star"], seed=seed),
         }
         paired_diffs[f"{m}_minus_cls_last"] = {
@@ -635,11 +682,13 @@ def write_ralr_report(results: dict[str, dict], dataset: str, out_dir: Path) -> 
 
 # --------------------------------------------------------------------------- CLI
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Run RALR + mandatory baselines on Pilot-8 (CUB or ImageNet).")
-    ap.add_argument("--dataset", choices=["cub", "imagenet"], default="cub")
+    ap = argparse.ArgumentParser(description="Run RALR + mandatory baselines on CUB, ImageNet-1K, or OpenImages30k.")
+    ap.add_argument("--dataset", choices=["cub", "imagenet", "openimages"], default="cub")
     ap.add_argument("--cub_dir", default=None)
     ap.add_argument("--images_dir", default=None)
     ap.add_argument("--imagenet_xml_dir", default=None)
+    ap.add_argument("--openimages_img_dir", default=None, help="OpenImages30k test images root directory.")
+    ap.add_argument("--openimages_mask_dir", default=None, help="OpenImages30k test pixel-mask PNG root directory.")
     ap.add_argument("--split_file", default=str(REPO_ROOT / "configs" / "splits" / "cub_pilot_500_seed0.txt"))
     ap.add_argument("--m1_m2_dir", default=None, help="Optional existing pilot_m1_m2 dir to reuse unlabelled KD/QII/E calibration.")
     ap.add_argument("--out_dir", default="results/pilot_ralr")

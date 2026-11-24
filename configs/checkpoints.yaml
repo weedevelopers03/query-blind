@@ -3,6 +3,10 @@
 # regression directly, so a wrong or missing value there is a wrong regression input, not just
 # bookkeeping.
 #
+# Covariate unit convention (Review 4 §4.6): `epochs` is recorded in effective dataset
+# epoch-equivalents = (total training samples seen) / (pretrain_images_m * 1e6), e.g.,
+# DINOv2 9.01 = 1.28B samples / 142M LVD-142M; OpenCLIP 14.66 = 34B / 2.32B; MetaCLIP 5.12 = 12.8B / 2.5B.
+#
 # Status: Sets A-F and the medical extension are researched below, each against its official
 # repo/model card via live search, not from memory. Two groups are NOT yet in this file at all:
 # positive controls (LaSt-ViT - a CVPR 2026 paper, plus test-time-register variants of OpenCLIP

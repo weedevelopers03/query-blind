@@ -5,18 +5,22 @@
 
 ---
 
-## 1. Pilot-8 Checkpoints (Verified)
+## 1. Twelve-Model Audit Zoo Checkpoints (All 12 Verified)
 
-| Checkpoint ID | Set | Objective | Source | License | Academic Use / Notes |
-|---|---|---|---|---|---|
-| `dino_vits16` | A | Self-distillation | `timm/vit_small_patch16_224.dino` | Apache-2.0 | Open; verified |
-| `deit3_small_patch16_224` | A | Label-supervised | `timm/deit3_small_patch16_224.fb_in1k` | Apache-2.0 | Open; verified |
-| `ibot_vits16` | A | Self-distillation + MIM | `github.com/bytedance/ibot` (`vits_16/checkpoint_teacher.pth`) | Apache-2.0 | Open; ImageNet norm verified |
-| `mocov3_vitb16` | A | Contrastive | `github.com/facebookresearch/moco-v3` (`vit-b-300ep.pth.tar`) | CC-BY-NC-4.0 | Non-commercial academic use permitted |
-| `mae_vitb16` | A | Masked reconstruction | `timm/vit_base_patch16_224.mae` | CC-BY-NC-4.0 | Non-commercial academic use permitted |
-| `dinov2_vitb14` | B | Self-distillation | `timm/vit_base_patch14_dinov2.lvd142m` | Apache-2.0 | Open; verified |
-| `dinov2_vitb14_reg` | B | Self-distillation + registers | `timm/vit_base_patch14_reg4_dinov2.lvd142m` | Apache-2.0 | Open; verified |
-| `openclip_vitb16` | F | Image-text contrastive | `open_clip: ViT-B-16 / laion2b_s34b_b88k` | MIT | Open; LAION-2B-en (2.32B imgs) |
+| Checkpoint ID | Set | Pool | Objective | Source | License | Academic Use / Notes |
+|---|---|---|---|---|---|---|
+| `dino_vits16` | A | Pilot-8 | Self-distillation | `timm/vit_small_patch16_224.dino` | Apache-2.0 | Open; verified |
+| `deit3_small_patch16_224` | A | Pilot-8 | Label-supervised | `timm/deit3_small_patch16_224.fb_in1k` | Apache-2.0 | Open; verified |
+| `ibot_vits16` | A | Pilot-8 | Self-distillation + MIM | `github.com/bytedance/ibot` (`vits_16/checkpoint_teacher.pth`) | Apache-2.0 | Open; ImageNet norm verified |
+| `mocov3_vitb16` | A | Pilot-8 | Contrastive | `github.com/facebookresearch/moco-v3` (`vit-b-300ep.pth.tar`) | CC-BY-NC-4.0 | Non-commercial academic use permitted |
+| `mae_vitb16` | A | Pilot-8 | Masked reconstruction | `timm/vit_base_patch16_224.mae` | CC-BY-NC-4.0 | Non-commercial academic use permitted |
+| `dinov2_vitb14` | B | Pilot-8 | Self-distillation | `timm/vit_base_patch14_dinov2.lvd142m` | Apache-2.0 | Open; verified |
+| `dinov2_vitb14_reg` | B | Pilot-8 | Self-distillation + registers | `timm/vit_base_patch14_reg4_dinov2.lvd142m` | Apache-2.0 | Open; verified |
+| `openclip_vitb16` | F | Pilot-8 | Image-text contrastive | `open_clip: ViT-B-16 / laion2b_s34b_b88k` | MIT | Open; LAION-2B-en (2.32B imgs) |
+| `dinov2_vits14` | B | New-4 | Self-distillation | `timm/vit_small_patch14_dinov2.lvd142m` | Apache-2.0 | Open; verified against DINOv2 card |
+| `dinov2_vits14_reg` | B | New-4 | Self-distillation + registers | `timm/vit_small_patch14_reg4_dinov2.lvd142m` | Apache-2.0 | Open; verified against DINOv2+reg card |
+| `deit3_small_patch16_224_in21k` | E | New-4 | Label-supervised | `timm/deit3_small_patch16_224.fb_in22k_ft_in1k` | Apache-2.0 | Open; IN-21K pretrain + IN-1K fine-tune |
+| `metaclip_vitb16` | C | New-4 | Image-text contrastive | `timm/vit_base_patch16_clip_224.metaclip_2pt5b` | CC-BY-NC-4.0 | Non-commercial academic use; MetaCLIP-2.5B |
 
 ---
 

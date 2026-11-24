@@ -52,6 +52,13 @@ IoU now uses LOST's own bbox_iou, and the boxes are saved as preds.pkl in main_l
 {image_name: box} format, so LOST's own main_corloc_evaluation.py can score them independently.
 The per-image CSV also records the seed patch.
 
+2026-11-19: (1) dino_pos_embed's native-size shortcut now also requires a square grid, as DINO's
+`npatch == N and w == h` does: before, a non-square grid with exactly N patches (7x28 = 196) skipped the
+interpolation. No VOC07 trainval image has such a grid (0 of 5011 in corloc_per_image.csv), so the 61.42% is
+unaffected. (2) main() fingerprints the live model's _pos_embed (adapters/pos_embed_interp.py), refuses to run
+unless it is DINO's path, and writes corloc_meta.json (git SHA, config hash, versions, interpolation path).
+Test: tests/test_pe_interpolation.py.
+
 Usage: PYTHONPATH=.:/path/to/LOST python3 extract/run_lost_native_res.py \\
   --image_dir /path/to/VOC2007/JPEGImages --split trainval
 """
@@ -73,6 +80,7 @@ from torchvision import transforms
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from adapters.timm_vit import TimmViTAdapter
+from adapters.pos_embed_interp import LABEL_DINO, interpolation_path, write_run_meta
 from object_discovery import lost  # LOST's own; see lost_corloc_from_cache.py's docstring for why
 from datasets import bbox_iou  # LOST's own IoU (object_discovery already imports it from here)
 
@@ -105,7 +113,7 @@ def dino_pos_embed(self, x):
     x = x.view(B, H * W, C)
 
     N = self.pos_embed.shape[1] - 1  # patches at pretrain resolution (224/16=14 -> 196)
-    if H * W == N:
+    if H * W == N and H == W:  # DINO: `npatch == N and w == h`; a non-square grid with N patches is still interpolated
         pos_embed = self.pos_embed
     else:
         class_pos_embed = self.pos_embed[:, :1]
@@ -184,6 +192,9 @@ def main(img_dir, gt_dir=None, pretrained=True, limit=None, split=None, csv_out=
     adapter.prepare(model)
     model._pos_embed = types.MethodType(dino_pos_embed, model)
     print("--> Patched _pos_embed: reproducing DINO's exact interpolate_pos_encoding (bicubic, no antialias, +0.1 epsilon)")
+    interp = interpolation_path(model)  # probe the live model: which interpolation will actually run
+    print(f"--> Interpolation path that will run: {interp['path']} (reference: {interp['reference']})")
+    assert interp["path"] == LABEL_DINO, f"positional-embedding interpolation is not DINO's: {interp}"
 
     img_paths = sorted(Path(img_dir).glob("*.jpg"))
     if split:
@@ -261,6 +272,11 @@ def main(img_dir, gt_dir=None, pretrained=True, limit=None, split=None, csv_out=
     print(f"--> CorLoc, native-resolution extraction ({total} images): {corloc:.2f}%  ({correct}/{total})")
     print("--> Published LOST: 61.9%; pre-registered pass band 60.9-62.9% (+-1.0 pt): "
           + ("INSIDE" if 60.9 <= corloc <= 62.9 else "OUTSIDE"))
+    meta_path = Path(csv_out or preds_out or "corloc_per_image.csv").with_name("corloc_meta.json")
+    write_run_meta(meta_path, model, ignore=[csv_out, preds_out],
+                   config=dict(image_dir=str(img_dir), split=split, limit=limit, pretrained=pretrained),
+                   run=dict(n_images=total, correct=correct, corloc_percent=round(corloc, 4)))
+    print(f"--> Run metadata (git SHA, config hash, interpolation path) written to {meta_path}")
 
 
 if __name__ == "__main__":

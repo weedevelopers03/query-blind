@@ -1,0 +1,268 @@
+"""Positional-embedding interpolation at a non-native size (supervisor, Oct 21).
+
+    pytest tests/test_pe_interpolation.py
+    python -m tests.test_pe_interpolation                       # prints the report, exit 1 on any FAIL
+    DINO_VIT_PY=/path/to/dino/vision_transformer.py python -m tests.test_pe_interpolation
+                                                                # reference = DINO's own function from that file
+
+Checks, and what makes each one fail:
+  PE-1  extract/run_lost_native_res.py::dino_pos_embed (the function that ships) gives the same tokens as DINO's
+        interpolate_pos_encoding, at the native 14x14 grid and at non-native grids (VOC07 trainval grids from
+        corloc_per_image.csv + two synthetic ones). Any deviation > 1e-6 fails.
+  PE-2  through the adapter: adapter.get_qkv at a non-native size on the patched model == on a model whose _pos_embed
+        is DINO's. Control: the same comparison on timm's stock model must DIFFER, otherwise a pass proves nothing.
+  PE-3  seeded bugs in the shipped function (drop +0.1, antialias, size= for scale_factor, H/W swap, ...) are each
+        caught by PE-1. A bug that is not caught fails the test.
+  PE-4  the meta.json flag: the fingerprint of the live model says "dino_interpolate_pos_encoding" for the patched
+        model, "timm_resample_abs_pos_embed" for the stock one, and neither for a seeded bug.
+  PE-5  main() of the runner binds the patch (types.MethodType(dino_pos_embed, model)), checks the path and writes it.
+
+Random weights, pos_embed ~ N(0,1) (so differences are not hidden by a small init), no downloads, CPU, seconds.
+The reference is a hand transcription of DINO's function unless DINO_VIT_PY points at DINO's vision_transformer.py;
+the report and meta.json say which one was used.
+"""
+import ast
+import json
+import math
+import sys
+import tempfile
+import types
+from functools import lru_cache
+from pathlib import Path
+
+import timm
+import torch
+import torch.nn.functional as F
+
+REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from adapters.pos_embed_interp import LABEL_DINO, LABEL_TIMM, dino_reference, interpolation_path, write_run_meta  # noqa: E402
+from adapters.timm_vit import TimmViTAdapter  # noqa: E402
+
+RUNNER = REPO / "extract" / "run_lost_native_res.py"
+PATCH = 16
+TOL_POS = 1e-6      # same F.interpolate call on the same input: expect bit-identical
+TOL_KEYS = 1e-5     # last-block keys through the adapter
+MIN_POWER = 1e-3    # control: stock timm must move the keys by at least this much, or the comparison is vacuous
+GRIDS = [  # (grid_h, grid_w), note. VOC counts: 5011-image trainval run
+    ((14, 14), "native 224x224: identity"),
+    ((24, 32), "VOC 384x512, 2302 images"),
+    ((32, 24), "VOC 512x384, 431 images"),
+    ((21, 32), "VOC 336x512, 1161 images"),
+    ((32, 32), "VOC 512x512, 32 images"),
+    ((6, 32), "VOC smallest height, 1 image"),
+    ((13, 19), "synthetic: one axis down, one up"),
+    ((7, 28), "synthetic: 7*28 == 196 but not square"),
+]
+E2E_GRIDS = [(24, 32), (32, 24), (13, 19)]
+MUTANTS = [  # (what is broken, text in dino_pos_embed, replacement)
+    ("drop DINO's +0.1 epsilon", "w0, h0 = W + 0.1, H + 0.1", "w0, h0 = W, H"),
+    ("exact size= instead of scale_factor", "scale_factor=(h0 / math.sqrt(N), w0 / math.sqrt(N)),", "size=(H, W),"),
+    ("antialias=True (timm's setting)", 'mode="bicubic",', 'mode="bicubic", antialias=True,'),
+    ("align_corners=True", 'mode="bicubic",', 'mode="bicubic", align_corners=True,'),
+    ("bilinear instead of bicubic", 'mode="bicubic",', 'mode="bilinear",'),
+    ("H and W swapped in scale_factor", "scale_factor=(h0 / math.sqrt(N), w0 / math.sqrt(N)),",
+     "scale_factor=(w0 / math.sqrt(N), h0 / math.sqrt(N)),"),
+    ("no native-size shortcut", "if H * W == N", "if False"),
+    ("pos_embed not added", "dim=1) + pos_embed", "dim=1) + 0 * pos_embed"),
+    ("patch positions sliced off by one", "self.pos_embed[:, 1:]", "self.pos_embed[:, :-1]"),
+]
+
+
+# ---------------------------------------------------------------- helpers
+def shipped_source():
+    text = RUNNER.read_text()
+    node = next(n for n in ast.parse(text).body if isinstance(n, ast.FunctionDef) and n.name == "dino_pos_embed")
+    return ast.get_source_segment(text, node)
+
+
+def compile_fn(src):
+    ns = {"math": math, "torch": torch, "F": F}
+    exec(compile(src, str(RUNNER), "exec"), ns)
+    return ns["dino_pos_embed"]
+
+
+def make_model(dynamic=True, seed=0):
+    torch.manual_seed(seed)
+    m = timm.create_model("vit_small_patch16_224", pretrained=False, dynamic_img_size=dynamic).eval()
+    with torch.no_grad():
+        m.pos_embed.copy_(torch.randn_like(m.pos_embed))
+    return m
+
+
+def image(grid, seed=1):
+    g = torch.Generator().manual_seed(seed)
+    return torch.randn(1, 3, grid[0] * PATCH, grid[1] * PATCH, generator=g)
+
+
+def ref_embed(model, pe, ref):
+    """DINO's prepare_tokens: [CLS] + patch tokens + interpolate_pos_encoding. pe is NHWC (B, H, W, C)."""
+    B, H, W, C = pe.shape
+    return torch.cat((model.cls_token.expand(B, -1, -1), pe.reshape(B, H * W, C)), 1) + ref(model.pos_embed, (H, W), PATCH)
+
+
+@torch.no_grad()
+def pos_diff(fn, model, grid, ref):
+    """max |tokens(fn) - tokens(DINO)| for fn(model, NHWC tokens); inf + reason if fn raises or the shape is wrong."""
+    pe = model.patch_embed(image(grid))
+    want = ref_embed(model, pe, ref)
+    try:
+        got = fn(pe.clone())
+    except Exception as e:
+        return float("inf"), f"raised {type(e).__name__}"
+    if got.shape != want.shape:
+        return float("inf"), f"shape {tuple(got.shape)} != {tuple(want.shape)}"
+    return (got - want).abs().max().item(), ""
+
+
+@torch.no_grad()
+def adapter_keys(model, grid):
+    ad = TimmViTAdapter()
+    ad.prepare(model)
+    _, k, _ = ad.get_qkv(model, image(grid), ad.n_blocks(model) - 1)
+    return k
+
+
+def patched_model(fn):
+    m = make_model()
+    m._pos_embed = types.MethodType(fn, m)
+    return m
+
+
+# ---------------------------------------------------------------- the checks
+@lru_cache(maxsize=1)
+def run_all():
+    ref, ref_kind = dino_reference()
+    src = shipped_source()
+    shipped = compile_fn(src)
+    base = make_model()
+    R = dict(reference=ref_kind, pe1=[], pe2=[], pe3=[], pe4={}, pe5={})
+
+    # PE-1: shipped function vs DINO, token tensor
+    for grid, note in GRIDS:
+        d, why = pos_diff(types.MethodType(shipped, base), base, grid, ref)
+        stock, _ = pos_diff(lambda pe: type(base)._pos_embed(base, pe), base, grid, ref)
+        R["pe1"].append(dict(grid=grid, px=(grid[0] * PATCH, grid[1] * PATCH), note=note, diff=d, why=why,
+                             timm_stock_diff=stock, ok=d <= TOL_POS))
+
+    # PE-2: through the adapter at a non-native size, with a control
+    refm, shipm, stockm = make_model(), patched_model(shipped), make_model()
+    refm._pos_embed = lambda t, m=refm: ref_embed(m, t, ref)
+    for grid in E2E_GRIDS:
+        try:
+            k_ref, k_ship, k_stock = adapter_keys(refm, grid), adapter_keys(shipm, grid), adapter_keys(stockm, grid)
+            d = (k_ship - k_ref).abs().max().item()
+            power = (k_stock - k_ref).abs().max().item()
+            R["pe2"].append(dict(grid=grid, diff=d, control_diff=power, ok=d <= TOL_KEYS and power >= MIN_POWER))
+        except Exception as e:
+            R["pe2"].append(dict(grid=grid, diff=float("inf"), control_diff=None, ok=False, why=f"{type(e).__name__}: {e}"))
+
+    # PE-3: seeded bugs in the shipped function must be caught by the PE-1 comparison
+    for what, old, new in MUTANTS:
+        if old not in src:
+            R["pe3"].append(dict(what=what, applicable=False, caught=None))
+            continue
+        bad = compile_fn(src.replace(old, new, 1))
+        worst, where = 0.0, None
+        for grid, _ in GRIDS:
+            d, why = pos_diff(types.MethodType(bad, base), base, grid, ref)
+            if d > worst:
+                worst, where = d, (grid, why)
+        R["pe3"].append(dict(what=what, applicable=True, caught=worst > TOL_POS, worst=worst, where=where))
+
+    # PE-4: the flag
+    fp_ship = interpolation_path(patched_model(shipped))
+    fp_stock = interpolation_path(make_model())
+    fp_fixed = interpolation_path(make_model(dynamic=False))
+    fp_mut = {w: interpolation_path(patched_model(compile_fn(src.replace(o, n, 1)))) for w, o, n in MUTANTS if o in src}
+    R["pe4"] = dict(
+        shipped=fp_ship, stock=fp_stock, fixed_size=fp_fixed, mutants={w: v["path"] for w, v in fp_mut.items()},
+        ok=(fp_ship["path"] == LABEL_DINO and fp_stock["path"] == LABEL_TIMM and fp_fixed["path"] == "not_applicable"
+            and all(v["path"] != LABEL_DINO for v in fp_mut.values())),
+    )
+    with tempfile.TemporaryDirectory() as d:
+        meta = write_run_meta(Path(d) / "meta.json", patched_model(shipped), config={"probe": "pe-test"}, run={})
+        back = json.loads((Path(d) / "meta.json").read_text())
+    R["pe4"]["meta_roundtrip"] = back["pos_embed_interpolation"]["path"] == LABEL_DINO and all(
+        k in back for k in ("git_sha", "git_dirty", "config_hash", "versions"))
+
+    # PE-5: the runner binds the patch, checks the path, writes the flag
+    main = next((n for n in ast.parse(RUNNER.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    called = {c.func.id for c in ast.walk(main) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)} if main else set()
+    binds = main is not None and any(
+        isinstance(n, ast.Assign) and any(isinstance(t, ast.Attribute) and t.attr == "_pos_embed" for t in n.targets)
+        and isinstance(n.value, ast.Call) and getattr(n.value.func, "attr", "") == "MethodType"
+        and n.value.args and getattr(n.value.args[0], "id", "") == "dino_pos_embed" for n in ast.walk(main))
+    R["pe5"] = dict(binds_patch=binds, fingerprints_path="interpolation_path" in called, writes_meta="write_run_meta" in called)
+    R["pe5"]["ok"] = all(R["pe5"].values())
+    return R
+
+
+# ---------------------------------------------------------------- pytest
+def test_pe1_shipped_matches_dino_at_non_native_sizes():
+    bad = [(r["grid"], r["diff"], r["why"]) for r in run_all()["pe1"] if not r["ok"]]
+    assert not bad, bad
+
+
+def test_pe2_adapter_at_non_native_size_matches_dino_and_has_power():
+    bad = [r for r in run_all()["pe2"] if not r["ok"]]
+    assert not bad, bad
+
+
+def test_pe3_every_seeded_bug_is_caught():
+    r = run_all()["pe3"]
+    assert any(x["applicable"] for x in r), "no mutant applied: the shipped function text changed, update MUTANTS"
+    missed = [x["what"] for x in r if x["applicable"] and not x["caught"]]
+    assert not missed, missed
+
+
+def test_pe4_flag_identifies_the_path_that_ran():
+    assert run_all()["pe4"]["ok"], run_all()["pe4"]
+    assert run_all()["pe4"]["meta_roundtrip"]
+
+
+def test_pe5_runner_binds_checks_and_records_the_path():
+    assert run_all()["pe5"]["ok"], run_all()["pe5"]
+
+
+# ---------------------------------------------------------------- report
+def report():
+    R = run_all()
+    ok_all = True
+    print(f"Positional-embedding interpolation at non-native size (random weights, pos_embed ~ N(0,1))")
+    print(f"reference: {R['reference']}\n")
+    print("PE-1  shipped dino_pos_embed vs DINO interpolate_pos_encoding: max |token diff| (tol %.0e)" % TOL_POS)
+    print(f"  {'grid':7s}{'px':10s}{'shipped':>10s}  {'timm stock':>10s}   note")
+    for r in R["pe1"]:
+        ok_all &= r["ok"]
+        print(f"  {r['grid'][0]}x{r['grid'][1]:<4}{r['px'][0]}x{r['px'][1]:<6}{r['diff']:>10.1e}  {r['timm_stock_diff']:>10.1e}   "
+              f"{'ok  ' if r['ok'] else 'FAIL'} {r['note']} {r['why']}")
+    print("\nPE-2  through the adapter, last-block keys (tol %.0e); control = stock timm must move them >= %.0e" % (TOL_KEYS, MIN_POWER))
+    for r in R["pe2"]:
+        ok_all &= r["ok"]
+        cd = "n/a" if r["control_diff"] is None else f"{r['control_diff']:.1e}"
+        print(f"  {r['grid'][0]}x{r['grid'][1]:<4} shipped-vs-DINO {r['diff']:.1e}   control (stock-vs-DINO) {cd}   "
+              f"{'ok' if r['ok'] else 'FAIL'} {r.get('why', '')}")
+    app = [x for x in R["pe3"] if x["applicable"]]
+    caught = sum(bool(x["caught"]) for x in app)
+    ok_all &= bool(app) and caught == len(app)
+    print(f"\nPE-3  seeded bugs caught {caught}/{len(app)}" + ("" if len(app) == len(R['pe3']) else f"  ({len(R['pe3']) - len(app)} not applicable: text not found)"))
+    for x in R["pe3"]:
+        tag = "n/a " if not x["applicable"] else "ok  " if x["caught"] else "MISS"
+        print(f"  {tag} {x['what']}")
+    p4 = R["pe4"]
+    ok_all &= p4["ok"] and p4["meta_roundtrip"]
+    print(f"\nPE-4  flag: shipped -> {p4['shipped']['path']} | stock timm -> {p4['stock']['path']} | fixed-size -> {p4['fixed_size']['path']}"
+          f" | seeded bugs -> {sorted(set(p4['mutants'].values()))} | meta.json round-trip {'ok' if p4['meta_roundtrip'] else 'FAIL'}"
+          f"  => {'ok' if p4['ok'] else 'FAIL'}")
+    p5 = R["pe5"]
+    ok_all &= p5["ok"]
+    print(f"\nPE-5  runner main(): binds patch={p5['binds_patch']}, fingerprints path={p5['fingerprints_path']}, "
+          f"writes meta={p5['writes_meta']}  => {'ok' if p5['ok'] else 'FAIL'}")
+    print("\nRESULT:", "PASS" if ok_all else "FAIL")
+    return ok_all
+
+
+if __name__ == "__main__":
+    sys.exit(0 if report() else 1)
