@@ -212,8 +212,11 @@ def _load_h3_from_m4_dir(
     # Optional matched random-drop C1_rand lookup from reviewer_controls.json (R3 CKA)
     rc_by_layer: dict[str, float] = {}
     c1_rand_source = None
+    c1_rand_verified_on_same_zoo = False
+    m4_models = set(rep.get("models", []))
     if reviewer_controls_json is not None and reviewer_controls_json.exists():
         rc = _load_json(reviewer_controls_json)
+        rc_models = set(rc.get("models", []))
         m4r = rc.get("m4_matched_random_drop", {})
         ds_key = "imagenet_1k" if "imagenet" in ds_name else ("waterbirds_2k" if "waterbirds" in ds_name else "cub")
         if isinstance(m4r, dict) and ds_key in m4r and isinstance(m4r[ds_key], dict):
@@ -221,7 +224,10 @@ def _load_h3_from_m4_dir(
                 if isinstance(entry, dict) and "tau_c0_c1_rand_mean" in entry:
                     rc_by_layer[lk] = float(entry["tau_c0_c1_rand_mean"])
             if rc_by_layer:
-                c1_rand_source = f"{reviewer_controls_json.name}:{ds_key} (R3 CKA)"
+                same_zoo = bool(m4_models and rc_models and m4_models == rc_models)
+                c1_rand_verified_on_same_zoo = same_zoo
+                tag = "SAME-ZOO VERIFIED" if same_zoo else f"MISMATCHED ZOO ({len(rc_models) or 8} vs {len(m4_models)})"
+                c1_rand_source = f"{reviewer_controls_json.name}:{ds_key} (R3 CKA; {tag})"
 
     def _extract_samples(block: dict[str, Any], s_offset: int) -> np.ndarray:
         if "samples" in block and block["samples"]:
@@ -263,7 +269,11 @@ def _load_h3_from_m4_dir(
         return None
     if len(cell_results) == 1:
         return cell_results[0]
-    return C.test_h3_m4_multicell(cell_results, c1_rand_source=c1_rand_source)
+    return C.test_h3_m4_multicell(
+        cell_results,
+        c1_rand_source=c1_rand_source,
+        c1_rand_verified_on_same_zoo=c1_rand_verified_on_same_zoo,
+    )
 
 
 def _load_h5_from_ralr_dirs(ralr_specs: list[str]) -> dict[str, Any] | None:
@@ -336,10 +346,10 @@ def format_markdown_summary(payload: dict[str, Any]) -> str:
                     f"ridge={cr['rank_deficient_ridge_applied']}"
                 )
                 lines.append(
-                    f"- `R²(obj only) = {cr['r2_objective_only']:.4f}` | "
-                    f"`R²(covs only) = {cr['r2_covariates_only']:.4f}` | "
-                    f"`R²(full) = {cr['r2_full']:.4f}` | "
-                    f"`ΔR²(obj | covs) = {cr['delta_r2_objective_given_covariates']:+.4f}`"
+                    f"- `R²(obj only) = {cr['r2_objective_only']:.4f}` (adj `{cr.get('r2_adj_objective_only')}`) | "
+                    f"`R²(covs only) = {cr['r2_covariates_only']:.4f}` (adj `{cr.get('r2_adj_covariates_only')}`) | "
+                    f"`R²(full) = {cr['r2_full']:.4f}` (adj `{cr.get('r2_adj_full')}`) | "
+                    f"`ΔR²_adj(obj | covs) = {cr.get('delta_r2_adj_objective_given_covariates')}`"
                 )
                 if cr.get("models_with_verify_flag"):
                     lines.append(f"- Models carrying `verify: true` in registry: `{cr['models_with_verify_flag']}`")
@@ -363,7 +373,7 @@ def parse_args(argv=None):
     ap.add_argument("--ralr_dirs", default="", help="Comma-separated name=path entries for RALR benchmarks.")
     ap.add_argument("--registry", default=str(REPO_ROOT / "configs" / "checkpoints.yaml"))
     ap.add_argument("--out_dir", default="results/confirmatory_stats")
-    ap.add_argument("--n_boot", type=int, default=2000)
+    ap.add_argument("--n_boot", type=int, default=10000)
     ap.add_argument("--seed", type=int, default=0)
     return ap.parse_args(argv)
 

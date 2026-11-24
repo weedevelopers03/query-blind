@@ -869,12 +869,15 @@ def test_h3_m4_multicell(
     cell_results: list[dict[str, Any]],
     *,
     c1_rand_source: str | None = None,
+    c1_rand_verified_on_same_zoo: bool = False,
 ) -> dict[str, Any]:
     """OSF §3 H3 multi-cell aggregation over all matched (l8..l11) x (R2, R3) CKA cells.
 
     Applies conservative within-H3 Bonferroni adjustment across all K evaluated cells:
         p_raw(H3) = min(1.0, K * min_c p_cell(c))
     so H3 pays the full K-cell multiplicity penalty BEFORE entering the 5-test Holm family.
+    Also tracks whether all K cells trigger vs any cell (transparently reporting both), and
+    whether the registered C1_rand gap >= 0.10 condition was verified on the exact same model zoo.
     """
     valid = [c for c in cell_results if c.get("p_raw") is not None and np.isfinite(float(c["p_raw"]))]
     K = len(valid)
@@ -892,18 +895,22 @@ def test_h3_m4_multicell(
         c["cell"] for c in valid
         if bool(c.get("both_below_noise")) and float(c["p_raw"]) < (0.05 / K)
     ]
-    # Pick representative cell with smallest p_raw (tie-broken by most negative mean_delta_same)
     best = min(valid, key=lambda c: (float(c["p_raw"]), float(c.get("mean_delta_same", 0.0))))
     p_bonf = float(min(1.0, K * float(best["p_raw"])))
     rand_ok_cells = [c["cell"] for c in valid if c.get("rand_gap_ok")]
     r3_gaps = [c["rand_gap"] for c in valid if ":R3:" in c["cell"] and c.get("rand_gap") is not None]
+    r3_min_gap = round(float(min(r3_gaps)), 4) if r3_gaps else None
+    all_registered_conditions_met = bool(
+        len(triggered) > 0 and c1_rand_verified_on_same_zoo and (r3_min_gap is not None and r3_min_gap >= 0.10)
+    )
 
     per_cell_clean = [{k: v for k, v in c.items() if k != "boot_samples"} for c in valid]
     out: dict[str, Any] = {
         "id": "H3",
-        "aggregation": f"bonferroni_across_{K}_cells",
+        "aggregation": f"any_cell_bonferroni_across_{K}_cells",
         "n_cells_total": K,
         "n_cells_triggered": len(triggered),
+        "all_cells_triggered": len(triggered) == K,
         "triggered_cells": triggered,
         "strongest_cell": best["cell"],
         "strongest_delta_same": round(float(best["mean_delta_same"]), 4),
@@ -912,8 +919,10 @@ def test_h3_m4_multicell(
         "min_cell_p_raw": float(best["p_raw"]),
         "p_raw": p_bonf,
         "rand_gap_ok_cells": rand_ok_cells,
-        "r3_min_rand_gap": round(float(min(r3_gaps)), 4) if r3_gaps else None,
+        "r3_min_rand_gap": r3_min_gap,
         "c1_rand_source": c1_rand_source,
+        "c1_rand_verified_on_same_zoo": bool(c1_rand_verified_on_same_zoo),
+        "all_registered_conditions_met": all_registered_conditions_met,
         "per_cell": per_cell_clean,
     }
     if best.get("boot_samples") is not None:
@@ -1117,6 +1126,18 @@ def fit_confound_regression_descriptive(
     _, r2_obj_only = _fit_r2(X_std[:, obj_idx], 0.0) if obj_idx else (np.array([]), 0.0)
     _, r2_cov_only = _fit_r2(X_std[:, non_obj_idx], eff_alpha) if non_obj_idx else (np.array([]), 0.0)
 
+    def _adj_r2(r2_val: float, k_rank: int) -> float | None:
+        dof = n - k_rank - 1
+        if dof <= 0:
+            return None
+        return round(float(1.0 - (1.0 - r2_val) * (n - 1) / dof), 4)
+
+    rank_obj = int(np.linalg.matrix_rank(X_std[:, obj_idx])) if obj_idx else 0
+    rank_cov = int(np.linalg.matrix_rank(X_std[:, non_obj_idx])) if non_obj_idx else 0
+    r2_adj_obj = _adj_r2(r2_obj_only, rank_obj)
+    r2_adj_cov = _adj_r2(r2_cov_only, rank_cov)
+    r2_adj_full = _adj_r2(r2_full, mat_rank)
+
     return {
         "status": "DESCRIPTIVE_ONLY_UNDERPOWERED",
         "n_complete": n,
@@ -1129,6 +1150,12 @@ def fit_confound_regression_descriptive(
         "r2_covariates_only": round(r2_cov_only, 4),
         "r2_full": round(r2_full, 4),
         "delta_r2_objective_given_covariates": round(r2_full - r2_cov_only, 4),
+        "r2_adj_objective_only": r2_adj_obj,
+        "r2_adj_covariates_only": r2_adj_cov,
+        "r2_adj_full": r2_adj_full,
+        "delta_r2_adj_objective_given_covariates": (
+            round(r2_adj_full - r2_adj_cov, 4) if (r2_adj_full is not None and r2_adj_cov is not None) else None
+        ),
         "standardized_coefs": {c: round(float(b), 4) for c, b in zip(active_cols, beta_full)},
         "included_models": [r["model_id"] for r in complete_rows],
         "models_with_verify_flag": [r["model_id"] for r in complete_rows if r["verify_flag"]],
