@@ -188,7 +188,7 @@ def main() -> None:
     fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.065), fontsize=7.7, ncol=4)
 
     fig.suptitle(
-        "Figure 4. Forward-Pass Causal Interventions I1 & I2 on ImageNet-1K (12 Models; I2 Subset = Smaller-Object Images <50% Area; * = New-4)",
+        "Forward-Pass Causal Interventions I1 & I2 on ImageNet-1K (12 Models; I2 Subset = Smaller-Object Images <50% Area; * = New-4)",
         fontsize=10.6, fontweight="bold", y=1.03,
     )
     save_figure(fig, args.out_dir, "fig4_i1_i2_summary")

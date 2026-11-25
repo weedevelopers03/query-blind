@@ -148,7 +148,7 @@ def main() -> None:
     fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(0.5, -0.06), ncol=4, fontsize=7.8)
 
     fig.suptitle(
-        "Figure 3. Waterbirds Balanced 2×2 Background Effect (M3 Leg; N = 5,794; H2b Conjunction Not Supported, p = 0.788)",
+        "Waterbirds Balanced 2×2 Background Effect (M3 Leg; N = 5,794; H2b Conjunction Not Supported, p = 0.788)",
         fontsize=10.8, fontweight="bold", y=1.03,
     )
     save_figure(fig, args.out_dir, "fig3_waterbirds_m3_l8_l11")

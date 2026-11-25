@@ -189,7 +189,7 @@ def main() -> None:
     ax.set_title("B. Fix 3 Dissociation: QII$_{S4}$ vs. $\\omega^2_{\\mathrm{key}}$ ($n = 12$)")
 
     fig.suptitle(
-        "Figure 2. Measure M1 (QII$_{S4}$) & Measure M2 ($\\omega^2_{\\mathrm{key}}$) Across the 12-Model Zoo on ImageNet-1K (N = 1,000; * = New-4)",
+        "Measure M1 (QII$_{S4}$) & Measure M2 ($\\omega^2_{\\mathrm{key}}$) Across the 12-Model Zoo on ImageNet-1K (N = 1,000; * = New-4)",
         fontsize=11.0, fontweight="bold", y=1.03,
     )
     save_figure(fig, args.out_dir, "fig2_qii_omega2_12models")

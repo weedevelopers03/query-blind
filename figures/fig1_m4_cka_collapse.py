@@ -144,7 +144,7 @@ def main() -> None:
     ax.legend(loc="upper left", fontsize=7.2, ncol=2)
 
     fig.suptitle(
-        "Figure 1. Artifact-Controlled Inter-Model Similarity on ImageNet-1K (12 Models, 66 Pairs, N = 1,000)",
+        "Artifact-Controlled Inter-Model Similarity on ImageNet-1K (12 Models, 66 Pairs, N = 1,000)",
         fontsize=11.5, fontweight="bold", y=1.03,
     )
     save_figure(fig, args.out_dir, "fig1_m4_cka_collapse")

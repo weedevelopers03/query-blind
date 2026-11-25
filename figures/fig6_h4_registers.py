@@ -177,7 +177,7 @@ def main() -> None:
     ax.legend(loc="upper right", bbox_to_anchor=(1.0, 0.77), fontsize=7.0)
 
     fig.suptitle(
-        "Figure 6. Exploratory H4 (Register Tokens): All 3 Registered Criteria & Scale-Dependent Artifact Behavior (* = New-4 Unseen)",
+        "Exploratory H4 (Register Tokens): All 3 Registered Criteria & Scale-Dependent Artifact Behavior (* = New-4 Unseen)",
         fontsize=10.8, fontweight="bold", y=1.03,
     )
     save_figure(fig, args.out_dir, "fig6_h4_registers")

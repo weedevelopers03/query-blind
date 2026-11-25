@@ -2,7 +2,7 @@
 """Figure 5 (H5 & Gate G3): RALR vs. [CLS]@l* across all 3 benchmarks + 3-benchmark Floor-Raiser Law (n=11 excl. MAE).
 
 Reads verbatim from:
-  - <results_dir>/zoo12_ralr_cub/ralr_report.json
+  - <results_dir>/zoo12_ralr_cub_full5794/ralr_cub_full5794_report.json (fallback: zoo12_ralr_cub/ralr_report.json)
   - <results_dir>/zoo12_ralr_in1k/ralr_report.json
   - <results_dir>/zoo12_ralr_openimages30k/ralr_openimages30k_report.json
 """
@@ -78,7 +78,11 @@ def main() -> None:
     args = parse_fig_args("Generate Figure 5: RALR vs [CLS]@l* across 3 benchmarks + Floor-Raiser regression.")
     apply_pub_style()
 
-    cub = json.loads((args.results_dir / "zoo12_ralr_cub" / "ralr_report.json").read_text())
+    cub_full = args.results_dir / "zoo12_ralr_cub_full5794" / "ralr_cub_full5794_report.json"
+    cub_path = cub_full if cub_full.exists() else (args.results_dir / "zoo12_ralr_cub" / "ralr_report.json")
+    cub = json.loads(cub_path.read_text())
+    cub_n = cub.get("n_images_full", 500)
+    cub_lbl = f"CUB-{cub_n:,}"
     in1k = json.loads((args.results_dir / "zoo12_ralr_in1k" / "ralr_report.json").read_text())
     oi = json.loads((args.results_dir / "zoo12_ralr_openimages30k" / "ralr_openimages30k_report.json").read_text())
 
@@ -86,7 +90,11 @@ def main() -> None:
 
     fig, axes = plt.subplots(2, 2, figsize=(13.6, 9.2), constrained_layout=True)
 
-    _plot_dumbbell_panel(axes[0, 0], cub, non_mae, "A. CUB-200-2011 (N = 500, n = 11)")
+    _plot_dumbbell_panel(
+        axes[0, 0], cub, non_mae,
+        f"A. CUB-200-2011 Full Test (N = {cub_n:,}, n = 11)",
+        show_pxap=(cub_n >= 5000),
+    )
     _plot_dumbbell_panel(axes[0, 1], in1k, non_mae, "B. ImageNet-1K (N = 1,000, n = 11)")
     axes[0, 1].set_yticklabels([])
 
@@ -97,7 +105,7 @@ def main() -> None:
     ax.axhline(0.0, color="#64748B", ls="--", lw=1.1, zorder=1)
 
     benches = [
-        ("CUB-500", cub, "#1B5E8A", "o"),
+        (cub_lbl, cub, "#1B5E8A", "o"),
         ("ImageNet-1K", in1k, "#D97706", "s"),
         ("OpenImages30k", oi, "#0F766E", "^"),
     ]
@@ -120,11 +128,11 @@ def main() -> None:
     ax.set_ylim(-0.042, 0.165)
     ax.set_xlabel("Clean Baseline [CLS]@l* box-AUC")
     ax.set_ylabel("RALR Gain $\\Delta$box-AUC (RALR $-$ [CLS]@l*)")
-    ax.set_title("D. Dataset-Invariant Floor-Raiser Law (n = 11 per benchmark)\nRALR lifts weak baselines (+5–14 pt) & saturates near ceiling", fontsize=8.8)
+    ax.set_title("D. Dataset-Invariant Floor-Raiser Law (n = 11 per benchmark)\nRALR lifts weak baselines (+5–11 pt) & saturates near ceiling", fontsize=8.8)
     ax.legend(loc="upper right", fontsize=7.4, framealpha=0.95)
 
     # Annotate gain vs ceiling zones in open whitespace
-    ax.text(0.585, 0.116, "Weak / contaminated\nbaselines: +5 to +14 pt", fontsize=7.5, color="#0F766E", fontweight="bold")
+    ax.text(0.585, 0.116, "Weak / contaminated\nbaselines: +5 to +11 pt", fontsize=7.5, color="#0F766E", fontweight="bold")
     ax.text(0.865, -0.032, "Strong SSL ceiling:\n~0 to -0.02 pt", fontsize=7.5, color="#B91C1C", fontweight="bold")
 
     # Shared legend for Panels A-C at bottom
@@ -137,7 +145,7 @@ def main() -> None:
     fig.legend(handles=leg_elems, loc="lower center", bbox_to_anchor=(0.5, -0.04), ncol=4, fontsize=7.8)
 
     fig.suptitle(
-        "Figure 5. RALR Across All Three Benchmarks (Matched n = 11 excl. MAE) — Gate G3 Verdict & Floor-Raiser Characterization",
+        "RALR Across All Three Benchmarks (Matched n = 11 excl. MAE) — Gate G3 Verdict & Floor-Raiser Characterization",
         fontsize=10.8, fontweight="bold", y=1.02,
     )
     save_figure(fig, args.out_dir, "fig5_ralr_vs_cls")

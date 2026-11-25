@@ -128,7 +128,7 @@ def main() -> None:
     ax.legend(loc="upper center", fontsize=7.4, ncol=2)
 
     fig.suptitle(
-        "Figure 7. Causal Mechanism of DeiT-III I1-S4 Gain (ImageNet-1K, N = 1,000, 5 Seeds, Exploratory Single-Recipe Analysis)",
+        "Causal Mechanism of DeiT-III I1-S4 Gain (ImageNet-1K, N = 1,000, 5 Seeds, Exploratory Single-Recipe Analysis)",
         fontsize=10.8, fontweight="bold", y=1.03,
     )
     save_figure(fig, args.out_dir, "fig7_deit3_i1_s4_mechanism")
